@@ -13,6 +13,8 @@ import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.util.EntityUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.itech.framework.fx.api_client.annotations.*;
 import org.itech.framework.fx.api_client.annotations.authentications.*;
 import org.itech.framework.fx.api_client.annotations.methods.*;
@@ -34,10 +36,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -46,6 +45,11 @@ public class ApiClientInvocationHandler implements InvocationHandler {
     private final String baseUrl;
     private final CloseableHttpClient httpClient;
     private final ExecutorService executor = Executors.newFixedThreadPool(10);
+
+    private int connectionTimeout = 30 * 1000;
+    private int socketTimeout=30 * 1000;
+
+    private final Logger logger = LogManager.getLogger(getClass());
 
     public ApiClientInvocationHandler(Class<?> apiInterface) {
         this.apiInterface = apiInterface;
@@ -290,13 +294,13 @@ public class ApiClientInvocationHandler implements InvocationHandler {
                 responseBody = EntityUtils.toString(entity, charset);
             }
 
-            if (statusCode < 200 || statusCode >= 300) {
+            /*if (statusCode < 200 || statusCode >= 300) {
                 throw ApiClientException.fromResponse(
                         "API request failed",
                         response,
                         responseBody
                 );
-            }
+            }*/
 
             if (responseBody == null || responseBody.isEmpty()) {
                 return null;
@@ -326,15 +330,31 @@ public class ApiClientInvocationHandler implements InvocationHandler {
                     "JSON Parsing Error",
                     e
             );
+        } catch (Exception e) {  // Catch-all for other exceptions
+            throw new ApiClientException(
+                    "Unexpected error processing response: " + e.getMessage(),
+                    statusCode,
+                    responseBody,
+                    "Processing Error",
+                    e
+            );
         } finally {
             EntityUtils.consumeQuietly(entity);
         }
     }
     private CloseableHttpClient createHttpClient() {
+
+        String connectionTimeOutStr = PropertiesLoader.getProperty("flexi.api.connection.timeout", "0");
+        connectionTimeout = connectionTimeOutStr == null ? connectionTimeout : Integer.parseInt(connectionTimeOutStr);
+
+        String socketTimeOutStr = PropertiesLoader.getProperty("flexi.api.socket.timeout", "0");
+        socketTimeout = socketTimeOutStr == null ? socketTimeout : Integer.parseInt(socketTimeOutStr);
+
+
         return HttpClients.custom()
                 .setDefaultRequestConfig(RequestConfig.custom()
-                        .setConnectTimeout(30 * 1000)
-                        .setSocketTimeout(30 * 1000)
+                        .setConnectTimeout(connectionTimeout)
+                        .setSocketTimeout(socketTimeout)
                         .setRedirectsEnabled(true)
                         .build())
                 .addInterceptorFirst(new LoggingInterceptor())
@@ -365,6 +385,30 @@ public class ApiClientInvocationHandler implements InvocationHandler {
         return sb.toString();
     }
 
+    // clean up
+    public void close() {
+        try {
+            logger.debug("Shouting down executor...");
+            executor.shutdown();
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+            logger.debug("Executors shoutted down!");
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+
+        try {
+            logger.debug("Closing http client...");
+            httpClient.close();
+            logger.debug("HTTP Client closed!");
+        } catch (IOException e) {
+            System.err.println("Error closing HttpClient: " + e.getMessage());
+        }
+    }
+
+
     protected static class HttpMethodInfo {
         private final String method;
         private final String path;
@@ -385,4 +429,5 @@ public class ApiClientInvocationHandler implements InvocationHandler {
             System.out.println("Request: " + request.getRequestLine().getMethod() + " " + request.getRequestLine().getUri());
         }
     }
+
 }
