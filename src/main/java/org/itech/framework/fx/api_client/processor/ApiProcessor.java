@@ -5,12 +5,16 @@ import org.itech.framework.fx.api_client.handlers.ApiClientInvocationHandler;
 import org.itech.framework.fx.core.processor.components_processor.ComponentProcessor;
 import org.itech.framework.fx.core.store.ComponentStore;
 import org.itech.framework.fx.exceptions.FrameworkException;
+import org.itech.framework.fx.utils.AnnotationUtils;
+
 import java.lang.reflect.Proxy;
 
 public class ApiProcessor {
     private static final String API_CLIENT_ERROR = "API client must be an interface";
 
     public static void processApiClient(Class<?> clazz) {
+        System.out.println("Processing API class: " + clazz.getName());
+        System.out.println("Is valid: " + isValidApiClient(clazz));
         if (isValidApiClient(clazz)) {
             validateIsInterface(clazz);
             registerApiClientProxy(clazz);
@@ -18,11 +22,11 @@ public class ApiProcessor {
     }
 
     private static boolean isValidApiClient(Class<?> clazz) {
-        return clazz.isAnnotationPresent(ApiClient.class) && clazz.isInterface();
+        return AnnotationUtils.hasAnnotation(clazz, ApiClient.class) && clazz.isInterface();
     }
 
     private static void validateIsInterface(Class<?> clazz) {
-        if (!clazz.isInterface()) {
+        if (!clazz.isInterface() && !AnnotationUtils.hasAnnotation(clazz, ApiClient.class)) {
             throw new FrameworkException(API_CLIENT_ERROR + ": " + clazz.getName());
         }
     }

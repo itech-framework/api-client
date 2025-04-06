@@ -59,6 +59,12 @@ public class ApiClientInvocationHandler implements InvocationHandler {
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        System.out.println("Method: " + method.getName() + ", class: " + method.getDeclaringClass().getName());
+
+        if (method.getDeclaringClass() == Object.class) {
+            return handleObjectMethod(proxy, method, args);
+        }
+
         if (method.getReturnType() == CompletableFuture.class) {
             return handleAsync(method, args);
         }
@@ -110,6 +116,17 @@ public class ApiClientInvocationHandler implements InvocationHandler {
         applyAuthentication(method, request);
 
         return httpClient.execute(request);
+    }
+
+    private Object handleObjectMethod(Object proxy, Method method, Object[] args) {
+        return switch (method.getName()) {
+            case "toString" -> "ApiClientProxy[" + apiInterface.getName() + "]";
+            case "hashCode" -> System.identityHashCode(proxy);
+            case "equals" -> proxy == args[0];
+            default -> throw new UnsupportedOperationException(
+                    "Unsupported Object method: " + method.getName()
+            );
+        };
     }
 
     private HttpMethodInfo getHttpMethodInfo(Method method) {
