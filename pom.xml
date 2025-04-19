@@ -4,9 +4,44 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.itech.framework.fx</groupId>
+    <groupId>io.github.itech-framework</groupId>
     <artifactId>api-client</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.1</version>
+
+    <name>iTech Framework - API Client Module</name>
+    <description>
+        Declarative HTTP client module for the Flexitech Framework, enabling effortless API integration
+        through annotation-driven interfaces. Features include:
+        - Define API endpoints with annotations
+        - Automatic implementation of client interfaces
+        - Request/response serialization
+        - Customizable error handling and retry policies
+        - Interceptors for logging, authentication, or headers
+        - Java 17+ compatibility with minimal boilerplate
+    </description>
+    <url>https://github.com/itech-framework/api-client</url>
+
+    <!-- Licensing Information -->
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>http://www.opensource.org/licenses/mit-license.php</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Sai Zaw Myint</name>
+            <email>itech.saizawmyint@gmail.com</email>
+        </developer>
+    </developers>
+
+    <!-- SCM Configuration -->
+    <scm>
+        <connection>scm:git:https://github.com/itech-framework/api-client.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/itech-framework/api-client.git</developerConnection>
+        <url>https://github.com/itech-framework/api-client/tree/main</url>
+    </scm>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -15,10 +50,11 @@
     </properties>
 
     <dependencies>
+
         <dependency>
-            <groupId>org.itech.framework.fx</groupId>
-            <artifactId>itechfx</artifactId>
-            <version>1.0-SNAPSHOT</version>
+            <groupId>io.github.itech-framework</groupId>
+            <artifactId>core</artifactId>
+            <version>1.0.1</version>
         </dependency>
 
         <dependency>
@@ -46,6 +82,7 @@
             <artifactId>okhttp</artifactId>
             <version>4.12.0</version>
         </dependency>
+
         <!-- https://mvnrepository.com/artifact/org.apache.httpcomponents/httpclient -->
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
@@ -59,4 +96,67 @@
             <version>2.18.2</version>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.7.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <source>17</source>
+                    <doclint>none</doclint>
+                    <show>protected</show>
+                    <links>
+                        <link>https://docs.oracle.com/en/java/javase/17/docs/api</link>
+                    </links>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.2.1</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+                <version>1.6</version>
+                <executions>
+                    <execution>
+                        <id>sign-artifacts</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>sign</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>
