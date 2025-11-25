@@ -6,7 +6,7 @@
 
     <groupId>io.github.itech-framework</groupId>
     <artifactId>api-client</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 
     <name>iTech Framework - API Client Module</name>
     <description>
@@ -54,7 +54,7 @@
         <dependency>
             <groupId>io.github.itech-framework</groupId>
             <artifactId>core</artifactId>
-            <version>1.0.1</version>
+            <version>1.0.11</version>
         </dependency>
 
         <dependency>
@@ -142,7 +142,7 @@
                     </execution>
                 </executions>
             </plugin>
-            <plugin>
+            <!--<plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>1.6</version>
@@ -155,7 +155,7 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>
+            </plugin>-->
         </plugins>
     </build>
 
