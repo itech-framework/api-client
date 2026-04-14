@@ -1,5 +1,5 @@
 package io.github.itech_framework.api_client.utils.enums;
 
 public enum AuthType {
-    BASIC, API_KEY, BEARER, OAUTH2
+    BASIC, API_KEY, BEARER, OAUTH2, DIGEST
 }

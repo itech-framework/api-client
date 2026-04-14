@@ -59,13 +59,15 @@ import io.github.itech_framework.api_client.annotations.authentications.ApiKey;
 import io.github.itech_framework.api_client.annotations.authentications.Authenticated;
 import io.github.itech_framework.api_client.annotations.authentications.BasicAuth;
 import io.github.itech_framework.api_client.annotations.authentications.BearerToken;
+import io.github.itech_framework.api_client.annotations.authentications.DigestAuth;
 import io.github.itech_framework.api_client.annotations.authentications.OAuth2;
 import io.github.itech_framework.api_client.annotations.methods.DELETE;
 import io.github.itech_framework.api_client.annotations.methods.GET;
 import io.github.itech_framework.api_client.annotations.methods.Header;
-import io.github.itech_framework.api_client.annotations.methods.OPTION;
+import io.github.itech_framework.api_client.annotations.methods.OPTIONS;
 import io.github.itech_framework.api_client.annotations.methods.POST;
 import io.github.itech_framework.api_client.annotations.methods.PUT;
+import io.github.itech_framework.api_client.annotations.parameters.BaseUrl;
 import io.github.itech_framework.api_client.annotations.parameters.Body;
 import io.github.itech_framework.api_client.annotations.parameters.Headers;
 import io.github.itech_framework.api_client.annotations.parameters.Path;
@@ -86,6 +88,7 @@ import io.github.itech_framework.api_client.interceptor.ApiInterceptor;
 import io.github.itech_framework.api_client.utils.JsonUtils;
 import io.github.itech_framework.core.exceptions.FrameworkException;
 import io.github.itech_framework.core.utils.PropertiesLoader;
+import io.github.itech_framework.core.utils.validator.CommonValidator;
 
 public class ApiClientInvocationHandler implements InvocationHandler {
 	private final Class<?> apiInterface;
@@ -151,7 +154,13 @@ public class ApiClientInvocationHandler implements InvocationHandler {
 		Map<String, String> pathParams = extractPathParams(method, args);
 		String resolvedPath = replacePathParams(pathTemplate, pathParams);
 
-		URIBuilder uriBuilder = new URIBuilder(baseUrl + resolvedPath);
+		String actualBaseUrl = extractBaseUrlFromMethod(method, args);
+		
+		if(!CommonValidator.validString(actualBaseUrl)) {
+			throw new FrameworkException("Base url is not defined. Please add base url using @ApiClient(baseUrl = \"...\") or please configure default global base url at properties file (e.g flexi.api.baseUrl=...) or please declare at the method parameter using @BaseUrl String baseUrl.");
+		}
+		
+		URIBuilder uriBuilder = new URIBuilder(actualBaseUrl + resolvedPath);
 		processQueryParams(method, args, uriBuilder);
 
 		HttpUriRequest request = createRequest(httpMethodInfo, uriBuilder);
@@ -185,8 +194,8 @@ public class ApiClientInvocationHandler implements InvocationHandler {
 			return new HttpMethodInfo("PUT", method.getAnnotation(PUT.class).value());
 		} else if (method.isAnnotationPresent(DELETE.class)) {
 			return new HttpMethodInfo("DELETE", method.getAnnotation(DELETE.class).value());
-		} else if (method.isAnnotationPresent(OPTION.class)) {
-			return new HttpMethodInfo("OPTIONS", method.getAnnotation(OPTION.class).value());
+		} else if (method.isAnnotationPresent(OPTIONS.class)) {
+			return new HttpMethodInfo("OPTIONS", method.getAnnotation(OPTIONS.class).value());
 		}
 		throw new IllegalArgumentException("No HTTP method annotation found on method: " + method.getName());
 	}
@@ -201,6 +210,26 @@ public class ApiClientInvocationHandler implements InvocationHandler {
 			}
 		}
 		return params;
+	}
+	
+	private String extractBaseUrlFromMethod(Method method, Object[] args) {
+		String baseUrl = "";
+		
+		Parameter[] parameters = method.getParameters();
+		
+		for (int i = 0; i < parameters.length; i ++) {
+			BaseUrl baseUrlParam = parameters[i].getAnnotation(BaseUrl.class);
+			if(baseUrlParam != null) {
+				baseUrl = args[i].toString();
+				break;
+			}
+		}
+		
+		if(CommonValidator.validString(baseUrl)) {
+			baseUrl = this.baseUrl;
+		}
+		
+		return baseUrl;
 	}
 
 	private String replacePathParams(String path, Map<String, String> params) {
@@ -315,7 +344,20 @@ public class ApiClientInvocationHandler implements InvocationHandler {
 				oauth = apiInterface.getAnnotation(OAuth2.class);
 			applyOAuth2(request, oauth);
 			break;
+		case DIGEST:
+			DigestAuth digestAuth = method.getAnnotation(DigestAuth.class);
+			if(digestAuth != null)
+				digestAuth = apiInterface.getAnnotation(DigestAuth.class);
+			applyDigestAuth(request, digestAuth);
+			break;
+		default:
+			break;
 		}
+	}
+
+	private void applyDigestAuth(HttpUriRequest request, DigestAuth digestAuth) {
+		// TODO Auto-generated method stub
+		
 	}
 
 	private void applyBasicAuth(HttpUriRequest request, BasicAuth auth) {
