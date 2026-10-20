@@ -33,6 +33,7 @@ import org.apache.logging.log4j.Logger;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 
+import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
@@ -110,6 +111,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private class MethodHandler {
 		private final Method method;
 		private final MethodMetadata metadata;
+		private AuthenticationProvider customAuth;
 
 		public MethodHandler(Method method) {
 			this.method = method;
@@ -157,7 +159,11 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 
 		private HttpUriRequest buildRequest(Object[] args) throws Exception {
-			URIBuilder uriBuilder = new URIBuilder(metadata.getFullUrl());
+			String effectiveBaseUrl = metadata.extractBaseUrl(args);
+			if (effectiveBaseUrl == null) {
+			    effectiveBaseUrl = metadata.getFullUrl();
+			}
+			URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
 
 			Map<String, Object> pathParams = metadata.extractPathParams(args);
 			String methodPath = metadata.resolvePath(pathParams);
@@ -179,7 +185,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 
 			applyHeaders(request, args);
 			applyBody(request, args);
-			applyAuthentication(request);
+			applyAuthentication(request, args);
 			applyDefaultHeaders(request);
 
 			return request;
@@ -216,7 +222,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 				interceptor.onRequest(request, context);
 			}
 
-			try (CloseableHttpResponse response = transportProvider.execute(request)) {
+			try (CloseableHttpResponse response = transportProvider.execute(request, customAuth)) {
 				for (Interceptor interceptor : config.getInterceptors()) {
 					interceptor.onResponse(response, context);
 				}
@@ -230,11 +236,10 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			}
 		}
 
-		private void applyAuthentication(HttpRequest request) {
-			if (config.getAuthenticationProvider() != null) {
-				HttpContext context = new BasicHttpContext();
-				config.getAuthenticationProvider().apply(request, context);
-			}
+		private void applyAuthentication(HttpRequest request, Object[] args) {
+			AuthenticationProvider auth = metadata.extractAuth(args);
+			if(auth != null)
+				customAuth = auth;
 		}
 
 		private void applyDefaultHeaders(HttpRequest request) {

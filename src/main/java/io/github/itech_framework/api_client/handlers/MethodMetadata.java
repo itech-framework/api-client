@@ -19,11 +19,13 @@ import io.github.itech_framework.api_client.annotations.methods.OPTIONS;
 import io.github.itech_framework.api_client.annotations.methods.PATCH;
 import io.github.itech_framework.api_client.annotations.methods.POST;
 import io.github.itech_framework.api_client.annotations.methods.PUT;
+import io.github.itech_framework.api_client.annotations.parameters.Auth;
 import io.github.itech_framework.api_client.annotations.parameters.BaseUrl;
 import io.github.itech_framework.api_client.annotations.parameters.Body;
 import io.github.itech_framework.api_client.annotations.parameters.Headers;
 import io.github.itech_framework.api_client.annotations.parameters.Path;
 import io.github.itech_framework.api_client.annotations.parameters.Query;
+import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 
 public class MethodMetadata {
 	private final Method method;
@@ -100,6 +102,18 @@ public class MethodMetadata {
 			}
 		}
 		return resolved;
+	}
+	
+	public String extractBaseUrl(Object[] args) {
+	    for (ParameterMetadata param : parameters) {
+	        if (param.type == ParameterMetadata.ParamType.BASE_URL && param.index < args.length) {
+	            Object value = args[param.index];
+	            if (value != null) {
+	                return value.toString();
+	            }
+	        }
+	    }
+	    return null;
 	}
 
 	public Map<String, Object> extractPathParams(Object[] args) {
@@ -209,6 +223,9 @@ public class MethodMetadata {
 			} else if (parameter.isAnnotationPresent(BaseUrl.class)) {
 				type = ParamType.BASE_URL;
 				name = null;
+			} else if (parameter.isAnnotationPresent(Auth.class)) {
+				type = ParamType.AUTH;
+				name = null;
 			} else {
 				type = ParamType.UNKNOWN;
 				name = null;
@@ -235,6 +252,10 @@ public class MethodMetadata {
 			return type == ParamType.HEADERS_MAP;
 		}
 
+		boolean isAuthHeader() {
+			return type == ParamType.AUTH;
+		}
+
 		/*
 		 * boolean isBaseUrl() { return type == ParamType.BASE_URL; }
 		 */
@@ -249,7 +270,19 @@ public class MethodMetadata {
 		}
 
 		enum ParamType {
-			PATH, QUERY, HEADER, BODY, HEADERS_MAP, BASE_URL, UNKNOWN
+			AUTH, PATH, QUERY, HEADER, BODY, HEADERS_MAP, BASE_URL, UNKNOWN
 		}
+	}
+
+	public AuthenticationProvider extractAuth(Object[] args) {
+		for (ParameterMetadata param : parameters) {
+			if (param.isAuthHeader() && param.index < args.length) {
+				if (args[param.index] instanceof AuthenticationProvider prov)
+					return prov;
+				else
+					throw new IllegalArgumentException("Auth parameter must be instance of the AuthenticationProvider");
+			}
+		}
+		return null;
 	}
 }

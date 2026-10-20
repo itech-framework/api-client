@@ -96,6 +96,19 @@ public class DynamicApiProcessor {
         return config;
     }
     
+	/*
+	 * private static AuthenticationProvider instantiateProvider(String className,
+	 * Class<?> apiInterface) { try { Class<?> providerClass =
+	 * Class.forName(className); if
+	 * (!AuthenticationProvider.class.isAssignableFrom(providerClass)) { throw new
+	 * FrameworkException("Class " + className + " does not implement " +
+	 * AuthenticationProvider.class.getName()); } return (AuthenticationProvider)
+	 * providerClass.getDeclaredConstructor().newInstance(); } catch (Exception e) {
+	 * throw new
+	 * FrameworkException("Failed to instantiate authentication provider: " +
+	 * className, e); } }
+	 */
+    
     private static String resolveBaseUrl(ApiClient apiClient, Class<?> clazz) {
         String baseUrl = apiClient.baseUrl();
         
@@ -134,6 +147,12 @@ public class DynamicApiProcessor {
     private static boolean getProperty(Class<?> clazz, String suffix, boolean defaultValue) {
         String value = PropertiesLoader.getProperty(getPropertyKey(clazz, suffix), String.valueOf(defaultValue));
         return value != null ? Boolean.parseBoolean(value) : defaultValue;
+    }
+    
+    @SuppressWarnings("unused")
+	private static String getProperty(Class<?> clazz, String suffix, String defaultValue) {
+        String value = PropertiesLoader.getProperty(getPropertyKey(clazz, suffix), String.valueOf(defaultValue));
+        return value != null ? value : defaultValue;
     }
     
     private static String getPropertyKey(Class<?> clazz, String suffix) {

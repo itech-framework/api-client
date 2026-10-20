@@ -16,7 +16,6 @@ public class TokenManager {
     private static final OkHttpClient httpClient = new OkHttpClient();
 
     private TokenManager() {
-        // Private constructor to prevent instantiation
     }
 
     public static synchronized String getToken(OAuth2 oauthConfig) {
@@ -77,7 +76,7 @@ public class TokenManager {
         return new TokenData(
                 accessToken,
                 refreshToken,
-                Instant.now().plusSeconds(expiresIn - 60)  // 60-second buffer
+                Instant.now().plusSeconds(expiresIn - 60)
         );
     }
 
