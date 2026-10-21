@@ -1,15 +1,25 @@
 package io.github.itech_framework.api_client.handlers;
 
+import java.io.InputStream;
+import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.apache.http.NameValuePair;
+import org.apache.http.message.BasicNameValuePair;
+
+import com.fasterxml.jackson.databind.JavaType;
 
 import io.github.itech_framework.api_client.annotations.methods.DELETE;
 import io.github.itech_framework.api_client.annotations.methods.GET;
@@ -26,263 +36,304 @@ import io.github.itech_framework.api_client.annotations.parameters.Headers;
 import io.github.itech_framework.api_client.annotations.parameters.Path;
 import io.github.itech_framework.api_client.annotations.parameters.Query;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
+import io.github.itech_framework.api_client.utils.JsonUtils;
 
 public class MethodMetadata {
-	private final Method method;
-	private final String httpMethod;
-	private final String path;
-	private final String baseUrl;
-	private final List<ParameterMetadata> parameters = new ArrayList<>();
-	private final Set<String> pathParamNames = new HashSet<>();
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{([^}]+)}");
 
-	public MethodMetadata(Method method, String httpMethod, String path, String baseUrl) {
-		this.method = method;
-		this.httpMethod = httpMethod;
-		this.path = path;
-		this.baseUrl = baseUrl;
-		extractPathParams();
-		extractParameters();
-	}
+    private final Method method;
+    private final String httpMethod;
+    private final String path;
+    private final String baseUrl;
+    private final List<ParameterMetadata> parameters = new ArrayList<>();
+    private final List<String> templateSegments;
+    private final boolean trailingSlash;
+    private final List<NameValuePair> staticHeaders;
+    private final boolean async;
+    private final Class<?> resultClass;
+    private final JavaType resultJavaType;
 
-	public static MethodMetadata fromMethod(Method method, String defaultBaseUrl) {
-		String httpMethod = null;
-		String path = null;
+    public MethodMetadata(Method method, String httpMethod, String path, String baseUrl) {
+        this.method = method;
+        this.httpMethod = httpMethod;
+        this.path = path == null ? "" : path;
+        this.baseUrl = baseUrl;
+        extractParameters();
+        this.templateSegments = splitTemplate(this.path);
+        this.trailingSlash = this.path.length() > 1 && this.path.endsWith("/");
+        validatePlaceholders();
+        this.staticHeaders = extractStaticHeaders();
+        this.async = method.getReturnType() == CompletableFuture.class;
+        Type resultType = async ? unwrapFuture(method.getGenericReturnType()) : method.getGenericReturnType();
+        this.resultClass = rawClass(resultType);
+        this.resultJavaType = isRawResult(resultClass) ? null : JsonUtils.constructType(resultType);
+    }
 
-		if (method.isAnnotationPresent(GET.class)) {
-			httpMethod = "GET";
-			path = method.getAnnotation(GET.class).value();
-		} else if (method.isAnnotationPresent(POST.class)) {
-			httpMethod = "POST";
-			path = method.getAnnotation(POST.class).value();
-		} else if (method.isAnnotationPresent(PUT.class)) {
-			httpMethod = "PUT";
-			path = method.getAnnotation(PUT.class).value();
-		} else if (method.isAnnotationPresent(DELETE.class)) {
-			httpMethod = "DELETE";
-			path = method.getAnnotation(DELETE.class).value();
-		} else if (method.isAnnotationPresent(PATCH.class)) {
-			httpMethod = "PATCH";
-			path = method.getAnnotation(PATCH.class).value();
-		} else if (method.isAnnotationPresent(HEAD.class)) {
-			httpMethod = "HEAD";
-			path = method.getAnnotation(HEAD.class).value();
-		} else if (method.isAnnotationPresent(OPTIONS.class)) {
-			httpMethod = "OPTIONS";
-			path = method.getAnnotation(OPTIONS.class).value();
-		}
+    public static MethodMetadata fromMethod(Method method, String defaultBaseUrl) {
+        if (method.isAnnotationPresent(GET.class)) {
+            return new MethodMetadata(method, "GET", method.getAnnotation(GET.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(POST.class)) {
+            return new MethodMetadata(method, "POST", method.getAnnotation(POST.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(PUT.class)) {
+            return new MethodMetadata(method, "PUT", method.getAnnotation(PUT.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(DELETE.class)) {
+            return new MethodMetadata(method, "DELETE", method.getAnnotation(DELETE.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(PATCH.class)) {
+            return new MethodMetadata(method, "PATCH", method.getAnnotation(PATCH.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(HEAD.class)) {
+            return new MethodMetadata(method, "HEAD", method.getAnnotation(HEAD.class).value(), defaultBaseUrl);
+        }
+        if (method.isAnnotationPresent(OPTIONS.class)) {
+            return new MethodMetadata(method, "OPTIONS", method.getAnnotation(OPTIONS.class).value(), defaultBaseUrl);
+        }
+        throw new IllegalArgumentException("No HTTP method annotation found on method: "
+                + method.getDeclaringClass().getName() + "." + method.getName());
+    }
 
-		if (httpMethod == null) {
-			throw new IllegalArgumentException("No HTTP method annotation found on method: " + method.getName());
-		}
+    private void extractParameters() {
+        Parameter[] params = method.getParameters();
+        for (int i = 0; i < params.length; i++) {
+            parameters.add(new ParameterMetadata(i, params[i]));
+        }
+    }
 
-		return new MethodMetadata(method, httpMethod, path, defaultBaseUrl);
-	}
+    private static List<String> splitTemplate(String template) {
+        List<String> segments = new ArrayList<>();
+        for (String segment : template.split("/")) {
+            if (!segment.isEmpty()) {
+                segments.add(segment);
+            }
+        }
+        return segments;
+    }
 
-	private void extractPathParams() {
-		Pattern pattern = Pattern.compile("\\{([^}]+)\\}");
-		Matcher matcher = pattern.matcher(path);
-		while (matcher.find()) {
-			pathParamNames.add(matcher.group(1));
-		}
-	}
+    private void validatePlaceholders() {
+        Set<String> declared = new HashSet<>();
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.PATH) {
+                declared.add(param.name);
+            }
+        }
+        Matcher matcher = PLACEHOLDER.matcher(path);
+        while (matcher.find()) {
+            if (!declared.contains(matcher.group(1))) {
+                throw new IllegalArgumentException("Path placeholder {" + matcher.group(1)
+                        + "} has no matching @Path parameter in " + method.getDeclaringClass().getName() + "."
+                        + method.getName());
+            }
+        }
+    }
 
-	private void extractParameters() {
-		Parameter[] params = method.getParameters();
-		for (int i = 0; i < params.length; i++) {
-			parameters.add(new ParameterMetadata(i, params[i]));
-		}
-	}
+    private List<NameValuePair> extractStaticHeaders() {
+        List<NameValuePair> headers = new ArrayList<>();
+        for (Header header : method.getAnnotationsByType(Header.class)) {
+            headers.add(new BasicNameValuePair(header.name(), header.value()));
+        }
+        return headers;
+    }
 
-	public String resolvePath(Map<String, Object> params) {
-		String resolved = path;
-		for (Map.Entry<String, Object> entry : params.entrySet()) {
-			if (pathParamNames.contains(entry.getKey())) {
-				resolved = resolved.replace("{" + entry.getKey() + "}",
-						entry.getValue() != null ? entry.getValue().toString() : "");
-			}
-		}
-		return resolved;
-	}
-	
-	public String extractBaseUrl(Object[] args) {
-	    for (ParameterMetadata param : parameters) {
-	        if (param.type == ParameterMetadata.ParamType.BASE_URL && param.index < args.length) {
-	            Object value = args[param.index];
-	            if (value != null) {
-	                return value.toString();
-	            }
-	        }
-	    }
-	    return null;
-	}
+    private static Type unwrapFuture(Type returnType) {
+        if (returnType instanceof ParameterizedType parameterized) {
+            return parameterized.getActualTypeArguments()[0];
+        }
+        return Object.class;
+    }
 
-	public Map<String, Object> extractPathParams(Object[] args) {
-		Map<String, Object> params = new HashMap<>();
-		for (ParameterMetadata param : parameters) {
-			if (param.isPathParam() && param.index < args.length) {
-				params.put(param.getName(), args[param.index]);
-			}
-		}
-		return params;
-	}
+    private static Class<?> rawClass(Type type) {
+        if (type instanceof Class<?> clazz) {
+            return clazz;
+        }
+        if (type instanceof ParameterizedType parameterized && parameterized.getRawType() instanceof Class<?> raw) {
+            return raw;
+        }
+        return Object.class;
+    }
 
-	public Map<String, Object> extractQueryParams(Object[] args) {
-		Map<String, Object> params = new HashMap<>();
-		for (ParameterMetadata param : parameters) {
-			if (param.isQueryParam() && param.index < args.length) {
-				params.put(param.getName(), args[param.index]);
-			}
-		}
-		return params;
-	}
+    private static boolean isRawResult(Class<?> clazz) {
+        return clazz == void.class || clazz == Void.class || clazz == String.class || clazz == byte[].class
+                || clazz == InputStream.class;
+    }
 
-	public Map<String, String> extractHeaders(Object[] args) {
-		Map<String, String> headers = new HashMap<>();
-		for (ParameterMetadata param : parameters) {
-			if (param.isHeaderParam() && param.index < args.length) {
-				String value = args[param.index] != null ? args[param.index].toString() : null;
-				if (value != null) {
-					headers.put(param.getName(), value);
-				}
-			}
-		}
-		// Also extract from @Headers Map if present
-		Map<String, String> mapHeaders = extractHeadersMap(args);
-		if (mapHeaders != null) {
-			headers.putAll(mapHeaders);
-		}
-		return headers;
-	}
+    public List<String> resolvePathSegments(Object[] args) {
+        Map<String, String> values = new HashMap<>();
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.PATH) {
+                Object value = args[param.index];
+                if (value == null) {
+                    throw new IllegalArgumentException("Path parameter '" + param.name + "' must not be null in "
+                            + method.getName());
+                }
+                values.put(param.name, value.toString());
+            }
+        }
+        List<String> resolved = new ArrayList<>(templateSegments.size() + 1);
+        for (String segment : templateSegments) {
+            resolved.add(values.isEmpty() ? segment : substitute(segment, values));
+        }
+        if (trailingSlash) {
+            resolved.add("");
+        }
+        return resolved;
+    }
 
-	private Map<String, String> extractHeadersMap(Object[] args) {
-		for (ParameterMetadata param : parameters) {
-			if (param.isHeadersMap() && param.index < args.length && args[param.index] != null) {
-				Object mapObj = args[param.index];
-				if (mapObj instanceof Map) {
-					Map<?, ?> rawMap = (Map<?, ?>) mapObj;
-					Map<String, String> stringMap = new HashMap<>();
-					for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-						if (entry.getKey() != null) {
-							stringMap.put(entry.getKey().toString(),
-									entry.getValue() != null ? entry.getValue().toString() : null);
-						}
-					}
-					return stringMap;
-				}
-			}
-		}
-		return null;
-	}
+    private static String substitute(String segment, Map<String, String> values) {
+        Matcher matcher = PLACEHOLDER.matcher(segment);
+        StringBuilder builder = new StringBuilder();
+        while (matcher.find()) {
+            String value = values.get(matcher.group(1));
+            matcher.appendReplacement(builder, Matcher.quoteReplacement(value != null ? value : matcher.group()));
+        }
+        matcher.appendTail(builder);
+        return builder.toString();
+    }
 
-	public Object extractBody(Object[] args) {
-		for (ParameterMetadata param : parameters) {
-			if (param.isBodyParam() && param.index < args.length) {
-				return args[param.index];
-			}
-		}
-		return null;
-	}
+    public String extractBaseUrl(Object[] args) {
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.BASE_URL && args[param.index] != null) {
+                return args[param.index].toString();
+            }
+        }
+        return null;
+    }
 
-	public String getFullUrl() {
-		return baseUrl;
-	}
+    public List<NameValuePair> extractQueryParams(Object[] args) {
+        List<NameValuePair> params = new ArrayList<>();
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.QUERY) {
+                addQueryValue(params, param.name, args[param.index]);
+            }
+        }
+        return params;
+    }
 
-	public String getHttpMethod() {
-		return httpMethod;
-	}
+    private static void addQueryValue(List<NameValuePair> params, String name, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addQueryValue(params, name, item);
+            }
+        } else if (value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            for (int i = 0; i < length; i++) {
+                addQueryValue(params, name, Array.get(value, i));
+            }
+        } else {
+            params.add(new BasicNameValuePair(name, value.toString()));
+        }
+    }
 
-	public String getPath() {
-		return path;
-	}
+    public List<NameValuePair> extractHeaders(Object[] args) {
+        List<NameValuePair> headers = new ArrayList<>(staticHeaders);
+        for (ParameterMetadata param : parameters) {
+            if (param.type != ParamType.HEADERS_MAP) {
+                continue;
+            }
+            Object arg = args[param.index];
+            if (arg == null) {
+                continue;
+            }
+            if (!(arg instanceof Map<?, ?> map)) {
+                throw new IllegalArgumentException("@Headers parameter must be a Map<String, String> in "
+                        + method.getName());
+            }
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    headers.add(new BasicNameValuePair(entry.getKey().toString(), entry.getValue().toString()));
+                }
+            }
+        }
+        return headers;
+    }
 
-	private static class ParameterMetadata {
-		final int index;
-		private final Parameter parameter;
-		final ParamType type;
-		final String name;
+    public Object extractBody(Object[] args) {
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.BODY) {
+                return args[param.index];
+            }
+        }
+        return null;
+    }
 
-		ParameterMetadata(int index, Parameter parameter) {
-			this.index = index;
-			this.parameter = parameter;
+    public AuthenticationProvider extractAuth(Object[] args) {
+        for (ParameterMetadata param : parameters) {
+            if (param.type == ParamType.AUTH) {
+                Object value = args[param.index];
+                if (value == null) {
+                    return null;
+                }
+                if (value instanceof AuthenticationProvider provider) {
+                    return provider;
+                }
+                throw new IllegalArgumentException("Auth parameter must be instance of the AuthenticationProvider");
+            }
+        }
+        return null;
+    }
 
-			if (parameter.isAnnotationPresent(Path.class)) {
-				type = ParamType.PATH;
-				name = parameter.getAnnotation(Path.class).value();
-			} else if (parameter.isAnnotationPresent(Query.class)) {
-				type = ParamType.QUERY;
-				name = parameter.getAnnotation(Query.class).value();
-			} else if (parameter.isAnnotationPresent(Header.class)) {
-				type = ParamType.HEADER;
-				name = parameter.getAnnotation(Header.class).name();
-			} else if (parameter.isAnnotationPresent(Body.class)) {
-				type = ParamType.BODY;
-				name = null;
-			} else if (parameter.isAnnotationPresent(Headers.class)) {
-				type = ParamType.HEADERS_MAP;
-				name = null;
-			} else if (parameter.isAnnotationPresent(BaseUrl.class)) {
-				type = ParamType.BASE_URL;
-				name = null;
-			} else if (parameter.isAnnotationPresent(Auth.class)) {
-				type = ParamType.AUTH;
-				name = null;
-			} else {
-				type = ParamType.UNKNOWN;
-				name = null;
-			}
-		}
+    public String getFullUrl() {
+        return baseUrl;
+    }
 
-		boolean isPathParam() {
-			return type == ParamType.PATH;
-		}
+    public String getHttpMethod() {
+        return httpMethod;
+    }
 
-		boolean isQueryParam() {
-			return type == ParamType.QUERY;
-		}
+    public String getPath() {
+        return path;
+    }
 
-		boolean isHeaderParam() {
-			return type == ParamType.HEADER;
-		}
+    public boolean isAsync() {
+        return async;
+    }
 
-		boolean isBodyParam() {
-			return type == ParamType.BODY;
-		}
+    public Class<?> getResultClass() {
+        return resultClass;
+    }
 
-		boolean isHeadersMap() {
-			return type == ParamType.HEADERS_MAP;
-		}
+    public JavaType getResultJavaType() {
+        return resultJavaType;
+    }
 
-		boolean isAuthHeader() {
-			return type == ParamType.AUTH;
-		}
+    private enum ParamType {
+        AUTH, PATH, QUERY, BODY, HEADERS_MAP, BASE_URL, UNKNOWN
+    }
 
-		/*
-		 * boolean isBaseUrl() { return type == ParamType.BASE_URL; }
-		 */
+    private static final class ParameterMetadata {
+        private final int index;
+        private final ParamType type;
+        private final String name;
 
-		String getName() {
-			return name;
-		}
-
-		@SuppressWarnings("unused")
-		public Parameter getParameter() {
-			return parameter;
-		}
-
-		enum ParamType {
-			AUTH, PATH, QUERY, HEADER, BODY, HEADERS_MAP, BASE_URL, UNKNOWN
-		}
-	}
-
-	public AuthenticationProvider extractAuth(Object[] args) {
-		for (ParameterMetadata param : parameters) {
-			if (param.isAuthHeader() && param.index < args.length) {
-				if (args[param.index] instanceof AuthenticationProvider prov)
-					return prov;
-				else
-					throw new IllegalArgumentException("Auth parameter must be instance of the AuthenticationProvider");
-			}
-		}
-		return null;
-	}
+        ParameterMetadata(int index, Parameter parameter) {
+            this.index = index;
+            if (parameter.isAnnotationPresent(Path.class)) {
+                this.type = ParamType.PATH;
+                this.name = parameter.getAnnotation(Path.class).value();
+            } else if (parameter.isAnnotationPresent(Query.class)) {
+                this.type = ParamType.QUERY;
+                this.name = parameter.getAnnotation(Query.class).value();
+            } else if (parameter.isAnnotationPresent(Body.class)) {
+                this.type = ParamType.BODY;
+                this.name = null;
+            } else if (parameter.isAnnotationPresent(Headers.class)) {
+                this.type = ParamType.HEADERS_MAP;
+                this.name = null;
+            } else if (parameter.isAnnotationPresent(BaseUrl.class)) {
+                this.type = ParamType.BASE_URL;
+                this.name = null;
+            } else if (parameter.isAnnotationPresent(Auth.class)) {
+                this.type = ParamType.AUTH;
+                this.name = null;
+            } else {
+                this.type = ParamType.UNKNOWN;
+                this.name = null;
+            }
+        }
+    }
 }

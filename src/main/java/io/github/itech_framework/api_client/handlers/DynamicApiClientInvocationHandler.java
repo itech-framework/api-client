@@ -1,20 +1,34 @@
 package io.github.itech_framework.api_client.handlers;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
+import java.lang.reflect.Modifier;
 import java.net.URI;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.charset.UnsupportedCharsetException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.http.Header;
+import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpRequest;
+import org.apache.http.NameValuePair;
+import org.apache.http.ParseException;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
@@ -25,20 +39,24 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.protocol.BasicHttpContext;
 import org.apache.http.protocol.HttpContext;
+import org.apache.http.util.EntityUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-
+import io.github.itech_framework.api_client.auth.AuthProviderFactory;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
+import io.github.itech_framework.api_client.exceptions.ApiException;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
 import io.github.itech_framework.api_client.utils.JsonUtils;
+import io.github.itech_framework.core.exceptions.FrameworkException;
 
 public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private static final Logger logger = LogManager.getLogger(DynamicApiClientInvocationHandler.class);
@@ -47,19 +65,21 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private final ApiClientConfig config;
 	private final HttpTransportProvider transportProvider;
 	private final ExecutorService executorService;
+	private final AuthProviderFactory authFactory;
+	private final ErrorDecoder errorDecoder = new ErrorDecoder();
 	private final Map<Method, MethodHandler> methodHandlers = new ConcurrentHashMap<>();
+
+	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth) {
+	}
 
 	public DynamicApiClientInvocationHandler(Class<?> apiInterface, ApiClientConfig config) {
 		this.apiInterface = apiInterface;
 		this.config = config;
+		this.authFactory = new AuthProviderFactory(apiInterface);
 		this.transportProvider = config.getHttpTransportProvider() != null ? config.getHttpTransportProvider()
 				: new DefaultHttpTransportProvider(config);
-
-		if (config.isEnableAsync()) {
-			this.executorService = Executors.newFixedThreadPool(config.getAsyncThreadPoolSize());
-		} else {
-			this.executorService = null;
-		}
+		this.executorService = config.isEnableAsync() ? createExecutor(apiInterface, config.getAsyncThreadPoolSize())
+				: null;
 
 		initializeMethodHandlers();
 
@@ -68,11 +88,26 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 	}
 
-	private void initializeMethodHandlers() {
-		for (Method method : apiInterface.getDeclaredMethods()) {
-			MethodHandler handler = new MethodHandler(method);
-			methodHandlers.put(method, handler);
+	private static ExecutorService createExecutor(Class<?> apiInterface, int requestedSize) {
+		int size = Math.max(1, requestedSize);
+		AtomicInteger counter = new AtomicInteger();
+		ThreadPoolExecutor executor = new ThreadPoolExecutor(size, size, 60L, TimeUnit.SECONDS,
+				new LinkedBlockingQueue<>(size * 100), runnable -> {
+					Thread thread = new Thread(runnable,
+							"api-client-" + apiInterface.getSimpleName() + "-" + counter.incrementAndGet());
+					thread.setDaemon(true);
+					return thread;
+				}, new ThreadPoolExecutor.CallerRunsPolicy());
+		executor.allowCoreThreadTimeOut(true);
+		return executor;
+	}
 
+	private void initializeMethodHandlers() {
+		for (Method method : apiInterface.getMethods()) {
+			if (method.isDefault() || method.isSynthetic() || Modifier.isStatic(method.getModifiers())) {
+				continue;
+			}
+			methodHandlers.put(method, new MethodHandler(method));
 			if (config.isEnableLogging()) {
 				logger.debug("Registered method handler for: {}.{}", apiInterface.getSimpleName(), method.getName());
 			}
@@ -84,129 +119,126 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		if (method.getDeclaringClass() == Object.class) {
 			return handleObjectMethod(proxy, method, args);
 		}
-
-		MethodHandler handler = methodHandlers.get(method);
-		if (handler == null) {
-			handler = new MethodHandler(method);
-			methodHandlers.put(method, handler);
+		if (method.isDefault()) {
+			return InvocationHandler.invokeDefault(proxy, method, args);
 		}
-
-		return handler.invoke(args);
+		MethodHandler handler = methodHandlers.computeIfAbsent(method, MethodHandler::new);
+		return handler.invoke(args == null ? new Object[0] : args);
 	}
 
 	private Object handleObjectMethod(Object proxy, Method method, Object[] args) {
-		switch (method.getName()) {
-		case "toString":
-			return String.format("DynamicApiClientProxy[%s@%s]", apiInterface.getName(),
-					Integer.toHexString(hashCode()));
-		case "hashCode":
-			return System.identityHashCode(proxy);
-		case "equals":
-			return proxy == args[0];
-		default:
-			throw new UnsupportedOperationException("Unsupported Object method: " + method.getName());
-		}
+		return switch (method.getName()) {
+		case "toString" -> String.format("DynamicApiClientProxy[%s@%s]", apiInterface.getName(),
+				Integer.toHexString(System.identityHashCode(proxy)));
+		case "hashCode" -> System.identityHashCode(proxy);
+		case "equals" -> proxy == args[0];
+		default -> throw new UnsupportedOperationException("Unsupported Object method: " + method.getName());
+		};
 	}
 
 	private class MethodHandler {
 		private final Method method;
 		private final MethodMetadata metadata;
-		private AuthenticationProvider customAuth;
+		private final AuthenticationProvider staticAuth;
 
-		public MethodHandler(Method method) {
+		MethodHandler(Method method) {
 			this.method = method;
 			this.metadata = MethodMetadata.fromMethod(method, config.getBaseUrl());
+			this.staticAuth = authFactory.resolve(method);
 		}
 
-		public Object invoke(Object[] args) throws Exception {
-			if (method.getReturnType() == CompletableFuture.class && config.isEnableAsync()) {
-				return invokeAsync(args);
-			} else {
+		Object invoke(Object[] args) throws Exception {
+			if (!metadata.isAsync()) {
 				return invokeSync(args);
+			}
+			if (config.isEnableAsync() && executorService != null) {
+				return invokeAsync(args);
+			}
+			try {
+				return CompletableFuture.completedFuture(invokeSync(args));
+			} catch (Exception e) {
+				return CompletableFuture.failedFuture(e);
 			}
 		}
 
 		private Object invokeSync(Object[] args) throws Exception {
-			HttpUriRequest request = buildRequest(args);
-			HttpContext context = createContext();
-
-			if (config.isEnableLogging()) {
-				logger.debug("Executing {} {} synchronously", request.getMethod(), request.getURI());
+			try {
+				PreparedRequest prepared = buildRequest(args);
+				HttpContext context = createContext();
+				if (config.isEnableLogging() && logger.isDebugEnabled()) {
+					logger.debug("Executing {}", describe(prepared.request()));
+				}
+				return executeRequest(prepared, context);
+			} catch (IOException e) {
+				throw translate(e);
 			}
-
-			return executeRequest(request, context);
 		}
 
 		private CompletableFuture<Object> invokeAsync(Object[] args) {
-			if (executorService == null) {
-				throw new IllegalStateException("Async execution is disabled in config");
-			}
-
 			return CompletableFuture.supplyAsync(() -> {
 				try {
-					HttpUriRequest request = buildRequest(args);
-					HttpContext context = createContext();
-
-					if (config.isEnableLogging()) {
-						logger.debug("Executing {} {} asynchronously", request.getMethod(), request.getURI());
-					}
-
-					return executeRequest(request, context);
+					return invokeSync(args);
 				} catch (Exception e) {
 					throw new CompletionException(e);
 				}
 			}, executorService);
 		}
 
-		private HttpUriRequest buildRequest(Object[] args) throws Exception {
-			String effectiveBaseUrl = metadata.extractBaseUrl(args);
-			if (effectiveBaseUrl == null) {
-			    effectiveBaseUrl = metadata.getFullUrl();
-			}
-			URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
-
-			Map<String, Object> pathParams = metadata.extractPathParams(args);
-			String methodPath = metadata.resolvePath(pathParams);
-
-			String basePath = uriBuilder.getPath();
-			if (basePath == null)
-				basePath = "";
-			String combinedPath = combinePaths(basePath, methodPath);
-			uriBuilder.setPath(combinedPath);
-
-			Map<String, Object> queryParams = metadata.extractQueryParams(args);
-			for (Map.Entry<String, Object> entry : queryParams.entrySet()) {
-				if (entry.getValue() != null) {
-					uriBuilder.addParameter(entry.getKey(), entry.getValue().toString());
+		private Exception translate(IOException e) {
+			for (Class<?> declared : method.getExceptionTypes()) {
+				if (declared.isAssignableFrom(e.getClass())) {
+					return e;
 				}
+			}
+			return new ApiException("I/O error while calling " + apiInterface.getSimpleName() + "." + method.getName(),
+					0, null, "IO_ERROR", e);
+		}
+
+		private PreparedRequest buildRequest(Object[] args) throws Exception {
+			String effectiveBaseUrl = metadata.extractBaseUrl(args);
+			if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
+				effectiveBaseUrl = metadata.getFullUrl();
+			}
+			if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
+				throw new FrameworkException("Base url is not defined for " + apiInterface.getName()
+						+ ". Use @ApiClient(baseUrl = \"...\"), the property api.client."
+						+ apiInterface.getSimpleName().toLowerCase()
+						+ ".baseUrl, the property flexi.api.baseUrl, or a @BaseUrl String parameter.");
+			}
+
+			URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
+			List<String> segments = new ArrayList<>();
+			String basePath = uriBuilder.getPath();
+			if (basePath != null) {
+				for (String segment : basePath.split("/")) {
+					if (!segment.isEmpty()) {
+						segments.add(segment);
+					}
+				}
+			}
+			segments.addAll(metadata.resolvePathSegments(args));
+			uriBuilder.setPathSegments(segments);
+
+			List<NameValuePair> queryParams = metadata.extractQueryParams(args);
+			if (!queryParams.isEmpty()) {
+				uriBuilder.addParameters(queryParams);
 			}
 
 			HttpUriRequest request = createHttpRequest(uriBuilder.build());
-
-			applyHeaders(request, args);
+			for (NameValuePair header : metadata.extractHeaders(args)) {
+				request.addHeader(header.getName(), header.getValue());
+			}
 			applyBody(request, args);
-			applyAuthentication(request, args);
 			applyDefaultHeaders(request);
 
-			return request;
-		}
-
-		private String combinePaths(String basePath, String methodPath) {
-			if (methodPath == null || methodPath.isEmpty()) {
-				return basePath;
+			AuthenticationProvider auth = metadata.extractAuth(args);
+			if (auth == null) {
+				auth = staticAuth;
 			}
-			String normalizedBase = basePath;
-			if (normalizedBase.endsWith("/")) {
-				normalizedBase = normalizedBase.substring(0, normalizedBase.length() - 1);
+			if (auth == null) {
+				auth = config.getAuthenticationProvider();
 			}
-			String normalizedMethod = methodPath;
-			if (!normalizedMethod.startsWith("/")) {
-				normalizedMethod = "/" + normalizedMethod;
-			}
-			if (normalizedBase.isEmpty()) {
-				return normalizedMethod;
-			}
-			return normalizedBase + normalizedMethod;
+			return new PreparedRequest(request, auth);
 		}
 
 		private HttpContext createContext() {
@@ -217,29 +249,21 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			return context;
 		}
 
-		private Object executeRequest(HttpUriRequest request, HttpContext context) throws Exception {
+		private Object executeRequest(PreparedRequest prepared, HttpContext context) throws Exception {
 			for (Interceptor interceptor : config.getInterceptors()) {
-				interceptor.onRequest(request, context);
+				interceptor.onRequest(prepared.request(), context);
 			}
-
-			try (CloseableHttpResponse response = transportProvider.execute(request, customAuth)) {
+			try (CloseableHttpResponse response = transportProvider.execute(prepared.request(), prepared.auth())) {
 				for (Interceptor interceptor : config.getInterceptors()) {
 					interceptor.onResponse(response, context);
 				}
-
-				return processResponse(response, context);
+				return processResponse(response);
 			} catch (Exception e) {
 				for (Interceptor interceptor : config.getInterceptors()) {
 					interceptor.onError(e, context);
 				}
 				throw e;
 			}
-		}
-
-		private void applyAuthentication(HttpRequest request, Object[] args) {
-			AuthenticationProvider auth = metadata.extractAuth(args);
-			if(auth != null)
-				customAuth = auth;
 		}
 
 		private void applyDefaultHeaders(HttpRequest request) {
@@ -250,27 +274,25 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			}
 		}
 
-		private void applyHeaders(HttpRequest request, Object[] args) {
-			Map<String, String> headers = metadata.extractHeaders(args);
-			for (Map.Entry<String, String> entry : headers.entrySet()) {
-				request.addHeader(entry.getKey(), entry.getValue());
+		private void applyBody(HttpUriRequest request, Object[] args) {
+			if (!(request instanceof HttpEntityEnclosingRequest enclosing)) {
+				return;
 			}
-		}
-
-		private void applyBody(HttpRequest request, Object[] args) throws Exception {
-			if (request instanceof HttpEntityEnclosingRequest) {
-				Object body = metadata.extractBody(args);
-				if (body != null) {
-					String json = JsonUtils.toJson(body);
-					StringEntity entity = new StringEntity(json, "UTF-8");
-					entity.setContentType("application/json");
-					((HttpEntityEnclosingRequest) request).setEntity(entity);
-				}
+			Object body = metadata.extractBody(args);
+			if (body == null) {
+				return;
 			}
+			Header contentType = request.getFirstHeader("Content-Type");
+			if (contentType != null && contentType.getValue() != null
+					&& contentType.getValue().toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+				enclosing.setEntity(new UrlEncodedFormEntity(toFormFields(body), StandardCharsets.UTF_8));
+				return;
+			}
+			enclosing.setEntity(new StringEntity(JsonUtils.toJson(body), ContentType.APPLICATION_JSON));
 		}
 
 		private HttpUriRequest createHttpRequest(URI uri) {
-			return switch (metadata.getHttpMethod().toUpperCase()) {
+			return switch (metadata.getHttpMethod()) {
 			case "GET" -> new HttpGet(uri);
 			case "POST" -> new HttpPost(uri);
 			case "PUT" -> new HttpPut(uri);
@@ -282,58 +304,82 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			};
 		}
 
-		private Object processResponse(CloseableHttpResponse response, HttpContext context) throws Exception {
-			int statusCode = response.getStatusLine().getStatusCode();
+		private Object processResponse(CloseableHttpResponse response) throws IOException {
+			int status = response.getStatusLine().getStatusCode();
+			HttpEntity entity = response.getEntity();
 
-			String responseBody = null;
-			if (response.getEntity() != null) {
-				responseBody = org.apache.http.util.EntityUtils.toString(response.getEntity(), "UTF-8");
-				org.apache.http.util.EntityUtils.consume(response.getEntity());
+			if (status >= 400) {
+				String errorBody = entity == null ? null : EntityUtils.toString(entity, charsetOf(entity));
+				throw errorDecoder.decode(status, errorBody);
 			}
 
-			if (statusCode >= 400) {
-				throw new RuntimeException(String.format("HTTP Error %d: %s", statusCode, responseBody));
-			}
-
-			if (method.getReturnType() == void.class) {
+			Class<?> resultClass = metadata.getResultClass();
+			if (resultClass == void.class || resultClass == Void.class) {
+				EntityUtils.consumeQuietly(entity);
 				return null;
 			}
-
-			if (method.getReturnType() == String.class) {
-				return responseBody;
+			if (entity == null) {
+				return null;
 			}
-
-			Type targetType = method.getGenericReturnType();
-			if (method.getReturnType() == CompletableFuture.class && targetType instanceof ParameterizedType) {
-				ParameterizedType paramType = (ParameterizedType) targetType;
-				if (paramType.getRawType() == CompletableFuture.class) {
-					Type actualType = paramType.getActualTypeArguments()[0];
-					if (actualType == String.class) {
-						return responseBody;
-					}
-					if (responseBody != null && !responseBody.trim().isEmpty()) {
-						return JsonUtils.fromJson(responseBody, new TypeReference<>() {
-							@Override
-							public Type getType() {
-								return actualType;
-							}
-						});
-					}
-					return null;
-				}
+			if (resultClass == String.class) {
+				return EntityUtils.toString(entity, charsetOf(entity));
 			}
-
-			if (responseBody != null && !responseBody.trim().isEmpty()) {
-				return JsonUtils.fromJson(responseBody, new TypeReference<>() {
-					@Override
-					public Type getType() {
-						return method.getGenericReturnType();
-					}
-				});
+			byte[] bytes = EntityUtils.toByteArray(entity);
+			if (resultClass == byte[].class) {
+				return bytes;
 			}
-
-			return null;
+			if (resultClass == InputStream.class) {
+				return new ByteArrayInputStream(bytes);
+			}
+			if (isBlank(bytes)) {
+				return null;
+			}
+			try {
+				return JsonUtils.fromJson(bytes, metadata.getResultJavaType());
+			} catch (FrameworkException e) {
+				String snippet = new String(bytes, 0, Math.min(bytes.length, 512), StandardCharsets.UTF_8);
+				throw new ApiException("Failed to parse JSON response", status, snippet, "JSON_PARSE_ERROR", e);
+			}
 		}
+	}
+
+	private static boolean isBlank(byte[] bytes) {
+		for (byte value : bytes) {
+			if (value != ' ' && value != '\n' && value != '\r' && value != '\t') {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static Charset charsetOf(HttpEntity entity) {
+		try {
+			ContentType contentType = ContentType.get(entity);
+			if (contentType != null && contentType.getCharset() != null) {
+				return contentType.getCharset();
+			}
+		} catch (ParseException | UnsupportedCharsetException e) {
+			return StandardCharsets.UTF_8;
+		}
+		return StandardCharsets.UTF_8;
+	}
+
+	private static String describe(HttpUriRequest request) {
+		URI uri = request.getURI();
+		return request.getMethod() + " " + uri.getScheme() + "://" + uri.getRawAuthority() + uri.getRawPath();
+	}
+	
+	private static List<NameValuePair> toFormFields(Object body) {
+		if (!(body instanceof Map<?, ?> map)) {
+			throw new IllegalArgumentException("A form-urlencoded @Body must be a Map");
+		}
+		List<NameValuePair> fields = new ArrayList<>();
+		for (Map.Entry<?, ?> entry : map.entrySet()) {
+			if (entry.getKey() != null && entry.getValue() != null) {
+				fields.add(new BasicNameValuePair(entry.getKey().toString(), entry.getValue().toString()));
+			}
+		}
+		return fields;
 	}
 
 	public void close() {

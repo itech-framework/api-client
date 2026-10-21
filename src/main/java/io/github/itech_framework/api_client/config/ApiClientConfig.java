@@ -4,10 +4,10 @@ import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class ApiClientConfig {
     private String baseUrl;
@@ -17,15 +17,17 @@ public class ApiClientConfig {
     private boolean followRedirects = true;
     private boolean sslVerification = true;
     private Map<String, String> defaultHeaders = new HashMap<>();
-    private List<Interceptor> interceptors = new ArrayList<>();
+    private List<Interceptor> interceptors = new CopyOnWriteArrayList<>();
     private AuthenticationProvider authenticationProvider;
     private HttpTransportProvider httpTransportProvider;
     private boolean enableAsync = true;
     private int asyncThreadPoolSize = 10;
     private boolean enableLogging = true;
     private String loggingLevel = "INFO";
+    private int maxRetries = 2;
+    private long retryBackoffMillis = 200;
+    private long retryMaxBackoffMillis = 5000;
 
-    // Builder pattern for easy configuration
     public static class Builder {
         private final ApiClientConfig config = new ApiClientConfig();
 
@@ -104,12 +106,26 @@ public class ApiClientConfig {
             return this;
         }
 
+        public Builder maxRetries(int retries) {
+            config.maxRetries = Math.max(0, retries);
+            return this;
+        }
+
+        public Builder retryBackoffMillis(long millis) {
+            config.retryBackoffMillis = Math.max(0, millis);
+            return this;
+        }
+
+        public Builder retryMaxBackoffMillis(long millis) {
+            config.retryMaxBackoffMillis = Math.max(0, millis);
+            return this;
+        }
+
         public ApiClientConfig build() {
             return config;
         }
     }
 
-    // Getters
     public String getBaseUrl() { return baseUrl; }
     public int getConnectTimeout() { return connectTimeout; }
     public int getSocketTimeout() { return socketTimeout; }
@@ -124,8 +140,28 @@ public class ApiClientConfig {
     public int getAsyncThreadPoolSize() { return asyncThreadPoolSize; }
     public boolean isEnableLogging() { return enableLogging; }
     public String getLoggingLevel() { return loggingLevel; }
+    public int getMaxRetries() { return maxRetries; }
+    public long getRetryBackoffMillis() { return retryBackoffMillis; }
+    public long getRetryMaxBackoffMillis() { return retryMaxBackoffMillis; }
 
     public static Builder builder() {
         return new Builder();
+    }
+
+    @Override
+    public String toString() {
+        return "ApiClientConfig{baseUrl='" + baseUrl
+                + "', connectTimeout=" + connectTimeout
+                + ", socketTimeout=" + socketTimeout
+                + ", maxConnections=" + maxConnections
+                + ", followRedirects=" + followRedirects
+                + ", sslVerification=" + sslVerification
+                + ", defaultHeaders=" + defaultHeaders.keySet()
+                + ", interceptors=" + interceptors.size()
+                + ", enableAsync=" + enableAsync
+                + ", asyncThreadPoolSize=" + asyncThreadPoolSize
+                + ", maxRetries=" + maxRetries
+                + ", retryBackoffMillis=" + retryBackoffMillis
+                + ", retryMaxBackoffMillis=" + retryMaxBackoffMillis + "}";
     }
 }

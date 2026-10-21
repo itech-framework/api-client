@@ -5,6 +5,12 @@ import org.apache.http.protocol.HttpContext;
 
 public interface AuthenticationProvider {
     void apply(HttpRequest request, HttpContext context);
+
     void refresh();
+
     boolean isExpired();
+
+    default boolean retryOnUnauthorized() {
+        return false;
+    }
 }
