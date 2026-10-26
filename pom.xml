@@ -6,7 +6,7 @@
 
     <groupId>io.github.itech-framework</groupId>
     <artifactId>api-client</artifactId>
-    <version>1.0.12-SNAPSHOT</version>
+    <version>1.0.12-RC1</version>
 
     <name>iTech Framework - API Client Module</name>
     <description>
@@ -21,7 +21,6 @@
     </description>
     <url>https://github.com/itech-framework/api-client</url>
 
-    <!-- Licensing Information -->
     <licenses>
         <license>
             <name>MIT License</name>
@@ -36,7 +35,6 @@
         </developer>
     </developers>
 
-    <!-- SCM Configuration -->
     <scm>
         <connection>scm:git:https://github.com/itech-framework/api-client.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/itech-framework/api-client.git</developerConnection>
@@ -47,14 +45,14 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <itech.version>1.0.12-RC1</itech.version>
     </properties>
 
     <dependencies>
-
         <dependency>
             <groupId>io.github.itech-framework</groupId>
             <artifactId>core</artifactId>
-            <version>1.0.12-SNAPSHOT</version>
+            <version>${itech.version}</version>
         </dependency>
 
         <dependency>
@@ -76,32 +74,30 @@
             <version>2.23.1</version>
         </dependency>
 
-        <!-- https://mvnrepository.com/artifact/com.squareup.okhttp3/okhttp -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
             <artifactId>okhttp</artifactId>
             <version>4.12.0</version>
         </dependency>
 
-        <!-- https://mvnrepository.com/artifact/org.apache.httpcomponents/httpclient -->
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
             <artifactId>httpclient</artifactId>
             <version>4.5.13</version>
         </dependency>
-        <!-- https://mvnrepository.com/artifact/com.fasterxml.jackson.datatype/jackson-datatype-jsr310 -->
+
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
             <version>2.18.2</version>
         </dependency>
-        
+
         <dependency>
-		    <groupId>org.junit.jupiter</groupId>
-		    <artifactId>junit-jupiter</artifactId>
-		    <version>5.10.2</version>
-		    <scope>test</scope>
-		</dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -127,9 +123,9 @@
                         <link>https://docs.oracle.com/en/java/javase/17/docs/api</link>
                     </links>
                     <javadocExecutable>${java.home}/bin/javadoc</javadocExecutable>
-					<additionalOptions>
-						<additionalOption>-Xdoclint:none</additionalOption>
-					</additionalOptions>
+                    <additionalOptions>
+                        <additionalOption>-Xdoclint:none</additionalOption>
+                    </additionalOptions>
                 </configuration>
                 <executions>
                     <execution>
@@ -153,7 +149,7 @@
                     </execution>
                 </executions>
             </plugin>
-            <!--<plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>1.6</version>
@@ -166,12 +162,12 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>-->
+            </plugin>
             <plugin>
-			    <groupId>org.apache.maven.plugins</groupId>
-			    <artifactId>maven-surefire-plugin</artifactId>
-			    <version>3.2.5</version>
-			</plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
         </plugins>
     </build>
 
