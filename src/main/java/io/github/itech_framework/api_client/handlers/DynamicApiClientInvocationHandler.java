@@ -28,7 +28,6 @@ import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpRequest;
 import org.apache.http.NameValuePair;
 import org.apache.http.ParseException;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
@@ -40,8 +39,6 @@ import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.entity.ContentType;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.protocol.BasicHttpContext;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.util.EntityUtils;
@@ -56,6 +53,7 @@ import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
 import io.github.itech_framework.api_client.utils.JsonUtils;
+import io.github.itech_framework.api_client.utils.body.BodyEncoders;
 import io.github.itech_framework.core.exceptions.FrameworkException;
 
 public class DynamicApiClientInvocationHandler implements InvocationHandler {
@@ -67,6 +65,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private final ExecutorService executorService;
 	private final AuthProviderFactory authFactory;
 	private final ErrorDecoder errorDecoder = new ErrorDecoder();
+	private final BodyEncoders bodyEncoders = BodyEncoders.defaults();
 	private final Map<Method, MethodHandler> methodHandlers = new ConcurrentHashMap<>();
 
 	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth) {
@@ -140,11 +139,13 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		private final Method method;
 		private final MethodMetadata metadata;
 		private final AuthenticationProvider staticAuth;
+		private final BodyResolver bodyResolver;
 
 		MethodHandler(Method method) {
 			this.method = method;
 			this.metadata = MethodMetadata.fromMethod(method, config.getBaseUrl());
 			this.staticAuth = authFactory.resolve(method);
+			this.bodyResolver = new BodyResolver(method);
 		}
 
 		Object invoke(Object[] args) throws Exception {
@@ -274,21 +275,35 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			}
 		}
 
-		private void applyBody(HttpUriRequest request, Object[] args) {
+		/**
+		 * Builds the request entity from @Body, @Part or @Field parameters.
+		 *
+		 * Content type precedence: @Body(contentType) > Content-Type header from @Header/@Headers >
+		 * default of the resolved body type. The entity's own Content-Type always replaces the header, so
+		 * multipart requests get a valid generated boundary.
+		 */
+		private void applyBody(HttpUriRequest request, Object[] args) throws IOException {
 			if (!(request instanceof HttpEntityEnclosingRequest enclosing)) {
 				return;
 			}
-			Object body = metadata.extractBody(args);
-			if (body == null) {
+			BodyResolver.Resolved resolved = bodyResolver.resolve(args);
+			if (resolved == null) {
 				return;
 			}
-			Header contentType = request.getFirstHeader("Content-Type");
-			if (contentType != null && contentType.getValue() != null
-					&& contentType.getValue().toLowerCase().startsWith("application/x-www-form-urlencoded")) {
-				enclosing.setEntity(new UrlEncodedFormEntity(toFormFields(body), StandardCharsets.UTF_8));
-				return;
+
+			String contentType = resolved.contentType();
+			if (contentType == null || contentType.isBlank()) {
+				Header header = request.getFirstHeader("Content-Type");
+				contentType = header == null ? null : header.getValue();
 			}
-			enclosing.setEntity(new StringEntity(JsonUtils.toJson(body), ContentType.APPLICATION_JSON));
+
+			HttpEntity entity = bodyEncoders.encode(resolved.value(), resolved.type(), contentType);
+
+			request.removeHeaders("Content-Type");
+			if (entity.getContentType() != null) {
+				request.setHeader(entity.getContentType());
+			}
+			enclosing.setEntity(entity);
 		}
 
 		private HttpUriRequest createHttpRequest(URI uri) {
@@ -367,19 +382,6 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private static String describe(HttpUriRequest request) {
 		URI uri = request.getURI();
 		return request.getMethod() + " " + uri.getScheme() + "://" + uri.getRawAuthority() + uri.getRawPath();
-	}
-	
-	private static List<NameValuePair> toFormFields(Object body) {
-		if (!(body instanceof Map<?, ?> map)) {
-			throw new IllegalArgumentException("A form-urlencoded @Body must be a Map");
-		}
-		List<NameValuePair> fields = new ArrayList<>();
-		for (Map.Entry<?, ?> entry : map.entrySet()) {
-			if (entry.getKey() != null && entry.getValue() != null) {
-				fields.add(new BasicNameValuePair(entry.getKey().toString(), entry.getValue().toString()));
-			}
-		}
-		return fields;
 	}
 
 	public void close() {
