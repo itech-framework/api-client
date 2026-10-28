@@ -6,6 +6,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -17,6 +18,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.http.NameValuePair;
+import org.apache.http.client.utils.URLEncodedUtils;
 import org.apache.http.message.BasicNameValuePair;
 
 import com.fasterxml.jackson.databind.JavaType;
@@ -44,9 +46,11 @@ public class MethodMetadata {
     private final Method method;
     private final String httpMethod;
     private final String path;
+    private final String pathTemplate;
     private final String baseUrl;
     private final List<ParameterMetadata> parameters = new ArrayList<>();
     private final List<String> templateSegments;
+    private final List<NameValuePair> staticQuery;
     private final boolean trailingSlash;
     private final List<NameValuePair> staticHeaders;
     private final boolean async;
@@ -59,8 +63,11 @@ public class MethodMetadata {
         this.path = path == null ? "" : path;
         this.baseUrl = baseUrl;
         extractParameters();
-        this.templateSegments = splitTemplate(this.path);
-        this.trailingSlash = this.path.length() > 1 && this.path.endsWith("/");
+        String[] parts = splitQuery(this.path);
+        this.pathTemplate = parts[0];
+        this.staticQuery = parseQuery(parts[1]);
+        this.templateSegments = splitTemplate(this.pathTemplate);
+        this.trailingSlash = this.pathTemplate.length() > 1 && this.pathTemplate.endsWith("/");
         validatePlaceholders();
         this.staticHeaders = extractStaticHeaders();
         this.async = method.getReturnType() == CompletableFuture.class;
@@ -100,6 +107,23 @@ public class MethodMetadata {
         for (int i = 0; i < params.length; i++) {
             parameters.add(new ParameterMetadata(i, params[i]));
         }
+    }
+
+    private static String[] splitQuery(String template) {
+        int hash = template.indexOf('#');
+        String clean = hash < 0 ? template : template.substring(0, hash);
+        int mark = clean.indexOf('?');
+        if (mark < 0) {
+            return new String[] { clean, "" };
+        }
+        return new String[] { clean.substring(0, mark), clean.substring(mark + 1) };
+    }
+
+    private static List<NameValuePair> parseQuery(String query) {
+        if (query.isEmpty()) {
+            return List.of();
+        }
+        return List.copyOf(URLEncodedUtils.parse(query, StandardCharsets.UTF_8));
     }
 
     private static List<String> splitTemplate(String template) {
@@ -159,7 +183,7 @@ public class MethodMetadata {
                 || clazz == InputStream.class;
     }
 
-    public List<String> resolvePathSegments(Object[] args) {
+    private Map<String, String> pathValues(Object[] args) {
         Map<String, String> values = new HashMap<>();
         for (ParameterMetadata param : parameters) {
             if (param.type == ParamType.PATH) {
@@ -171,6 +195,11 @@ public class MethodMetadata {
                 values.put(param.name, value.toString());
             }
         }
+        return values;
+    }
+
+    public List<String> resolvePathSegments(Object[] args) {
+        Map<String, String> values = pathValues(args);
         List<String> resolved = new ArrayList<>(templateSegments.size() + 1);
         for (String segment : templateSegments) {
             resolved.add(values.isEmpty() ? segment : substitute(segment, values));
@@ -203,6 +232,17 @@ public class MethodMetadata {
 
     public List<NameValuePair> extractQueryParams(Object[] args) {
         List<NameValuePair> params = new ArrayList<>();
+        if (!staticQuery.isEmpty()) {
+            Map<String, String> values = pathValues(args);
+            for (NameValuePair pair : staticQuery) {
+                String name = values.isEmpty() ? pair.getName() : substitute(pair.getName(), values);
+                String value = pair.getValue();
+                if (value != null && !values.isEmpty()) {
+                    value = substitute(value, values);
+                }
+                params.add(new BasicNameValuePair(name, value));
+            }
+        }
         for (ParameterMetadata param : parameters) {
             if (param.type == ParamType.QUERY) {
                 addQueryValue(params, param.name, args[param.index]);

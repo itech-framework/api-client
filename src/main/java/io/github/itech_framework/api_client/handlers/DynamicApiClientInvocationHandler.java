@@ -11,8 +11,10 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,6 +28,7 @@ import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpRequest;
+import org.apache.http.HttpResponse;
 import org.apache.http.NameValuePair;
 import org.apache.http.ParseException;
 import org.apache.http.client.methods.CloseableHttpResponse;
@@ -45,6 +48,8 @@ import org.apache.http.util.EntityUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.fasterxml.jackson.databind.JavaType;
+
 import io.github.itech_framework.api_client.auth.AuthProviderFactory;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
@@ -54,6 +59,8 @@ import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
 import io.github.itech_framework.api_client.utils.JsonUtils;
 import io.github.itech_framework.api_client.utils.body.BodyEncoders;
+import io.github.itech_framework.api_client.utils.response.ApiResponse;
+import io.github.itech_framework.api_client.utils.response.StreamResponse;
 import io.github.itech_framework.core.exceptions.FrameworkException;
 
 public class DynamicApiClientInvocationHandler implements InvocationHandler {
@@ -254,16 +261,29 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			for (Interceptor interceptor : config.getInterceptors()) {
 				interceptor.onRequest(prepared.request(), context);
 			}
-			try (CloseableHttpResponse response = transportProvider.execute(prepared.request(), prepared.auth())) {
+			CloseableHttpResponse response = null;
+			boolean keepOpen = false;
+			try {
+				response = transportProvider.execute(prepared.request(), prepared.auth());
 				for (Interceptor interceptor : config.getInterceptors()) {
 					interceptor.onResponse(response, context);
 				}
-				return processResponse(response);
+				Object result = processResponse(response);
+				keepOpen = result instanceof StreamResponse;
+				return result;
 			} catch (Exception e) {
 				for (Interceptor interceptor : config.getInterceptors()) {
 					interceptor.onError(e, context);
 				}
 				throw e;
+			} finally {
+				if (response != null && !keepOpen) {
+					try {
+						response.close();
+					} catch (IOException ignored) {
+						// nothing useful to do
+					}
+				}
 			}
 		}
 
@@ -278,9 +298,10 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		/**
 		 * Builds the request entity from @Body, @Part or @Field parameters.
 		 *
-		 * Content type precedence: @Body(contentType) > Content-Type header from @Header/@Headers >
-		 * default of the resolved body type. The entity's own Content-Type always replaces the header, so
-		 * multipart requests get a valid generated boundary.
+		 * Content type precedence: @Body(contentType) > Content-Type header
+		 * from @Header/@Headers > default of the resolved body type. The entity's own
+		 * Content-Type always replaces the header, so multipart requests get a valid
+		 * generated boundary.
 		 */
 		private void applyBody(HttpUriRequest request, Object[] args) throws IOException {
 			if (!(request instanceof HttpEntityEnclosingRequest enclosing)) {
@@ -329,6 +350,19 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			}
 
 			Class<?> resultClass = metadata.getResultClass();
+			if (resultClass == StreamResponse.class) {
+				return new StreamResponse(response);
+			}
+			if (resultClass == ApiResponse.class) {
+				JavaType inner = metadata.getResultJavaType().containedTypeOrUnknown(0);
+				Object body = readBody(entity, status, inner.getRawClass(), inner);
+				return new ApiResponse<>(status, headersOf(response), body);
+			}
+			return readBody(entity, status, resultClass, metadata.getResultJavaType());
+		}
+
+		private Object readBody(HttpEntity entity, int status, Class<?> resultClass, JavaType javaType)
+				throws IOException {
 			if (resultClass == void.class || resultClass == Void.class) {
 				EntityUtils.consumeQuietly(entity);
 				return null;
@@ -350,7 +384,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 				return null;
 			}
 			try {
-				return JsonUtils.fromJson(bytes, metadata.getResultJavaType());
+				return JsonUtils.fromJson(bytes, javaType);
 			} catch (FrameworkException e) {
 				String snippet = new String(bytes, 0, Math.min(bytes.length, 512), StandardCharsets.UTF_8);
 				throw new ApiException("Failed to parse JSON response", status, snippet, "JSON_PARSE_ERROR", e);
@@ -365,6 +399,14 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			}
 		}
 		return true;
+	}
+	
+	private static Map<String, List<String>> headersOf(HttpResponse response) {
+		Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+		for (Header header : response.getAllHeaders()) {
+			headers.computeIfAbsent(header.getName(), key -> new ArrayList<>()).add(header.getValue());
+		}
+		return Collections.unmodifiableMap(headers);
 	}
 
 	private static Charset charsetOf(HttpEntity entity) {

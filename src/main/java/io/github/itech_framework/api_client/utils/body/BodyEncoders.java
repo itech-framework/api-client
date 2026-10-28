@@ -35,7 +35,7 @@ import io.github.itech_framework.api_client.utils.JsonUtils;
 public final class BodyEncoders {
 
 	private static final String FORM_MIME = "application/x-www-form-urlencoded";
-	private static final ContentType TEXT_UTF8 = ContentType.create("text/plain", StandardCharsets.UTF_8);
+	static final ContentType TEXT_UTF8 = ContentType.create("text/plain", StandardCharsets.UTF_8);
 
 	private final List<BodyEncoder> custom;
 
@@ -187,15 +187,18 @@ public final class BodyEncoders {
 
 	private static HttpEntity multipart(Object body, String contentType) {
 		MultipartBody multipart = toMultipart(body);
-		MultipartEntityBuilder builder = MultipartEntityBuilder.create().setMode(HttpMultipartMode.RFC6532);
 		String mime = mimeType(contentType);
+		if ("multipart/related".equals(mime)) {
+			return new MultipartRelatedEntity(multipart.parts());
+		}
+		MultipartEntityBuilder builder = MultipartEntityBuilder.create().setMode(HttpMultipartMode.RFC6532);
 		if (mime != null && mime.startsWith("multipart/") && !mime.equals("multipart/form-data")) {
 			builder.setMimeSubtype(mime.substring("multipart/".length()));
 		}
 		for (MultipartBody.Part part : multipart.parts()) {
 			addPart(builder, part);
 		}
-		return builder.build(); // boundary is generated here and ends up in the entity's Content-Type
+		return builder.build();
 	}
 
 	private static MultipartBody toMultipart(Object body) {
@@ -249,17 +252,17 @@ public final class BodyEncoders {
 
 	// ---------------------------------------------------------------- helpers
 
-	private static boolean isScalar(Object value) {
+	static boolean isScalar(Object value) {
 		return value instanceof CharSequence || value instanceof Number || value instanceof Boolean
 				|| value instanceof Character || value instanceof Enum<?>;
 	}
 
-	private static ContentType withCharset(ContentType type) {
+	static ContentType withCharset(ContentType type) {
 		// httpmime falls back to ASCII for text parts without a charset, which mangles non-ASCII text
 		return type.getCharset() == null ? type.withCharset(StandardCharsets.UTF_8) : type;
 	}
 
-	private static ContentType parse(String value, ContentType fallback) {
+	static ContentType parse(String value, ContentType fallback) {
 		if (value == null || value.isBlank()) {
 			return fallback;
 		}
@@ -270,7 +273,7 @@ public final class BodyEncoders {
 		}
 	}
 
-	private static ContentType probe(File file) {
+	static ContentType probe(File file) {
 		try {
 			String mime = Files.probeContentType(file.toPath());
 			if (mime != null) {
@@ -282,7 +285,7 @@ public final class BodyEncoders {
 		return ContentType.APPLICATION_OCTET_STREAM;
 	}
 
-	private static String mimeType(String contentType) {
+	static String mimeType(String contentType) {
 		if (contentType == null || contentType.isBlank()) {
 			return null;
 		}
@@ -291,7 +294,7 @@ public final class BodyEncoders {
 		return mime.trim().toLowerCase(Locale.ROOT);
 	}
 
-	private static String blankToNull(String value) {
+	static String blankToNull(String value) {
 		return value == null || value.isBlank() ? null : value;
 	}
 }
