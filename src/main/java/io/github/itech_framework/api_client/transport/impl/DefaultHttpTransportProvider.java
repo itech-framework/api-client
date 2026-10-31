@@ -2,7 +2,12 @@ package io.github.itech_framework.api_client.transport.impl;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.ProxySelector;
+import java.net.URI;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -12,10 +17,16 @@ import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
 
 import org.apache.http.Header;
+import org.apache.http.HttpEntityEnclosingRequest;
+import org.apache.http.HttpHeaders;
+import org.apache.http.HttpHost;
+import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
+import org.apache.http.ProtocolException;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
@@ -23,10 +34,14 @@ import org.apache.http.conn.socket.PlainConnectionSocketFactory;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.DefaultRedirectStrategy;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.http.impl.conn.SystemDefaultRoutePlanner;
+import org.apache.http.message.BasicHeader;
 import org.apache.http.protocol.BasicHttpContext;
+import org.apache.http.protocol.HttpContext;
 import org.apache.http.ssl.SSLContexts;
 import org.apache.http.util.EntityUtils;
 import org.apache.logging.log4j.LogManager;
@@ -35,6 +50,7 @@ import org.apache.logging.log4j.Logger;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.auth.HttpClientAwareAuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
+import io.github.itech_framework.api_client.exceptions.RequestCancelledException;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 
 public class DefaultHttpTransportProvider implements HttpTransportProvider {
@@ -55,6 +71,11 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 	private PoolingHttpClientConnectionManager createConnectionManager(ApiClientConfig config) {
 		try {
+			
+			if (!config.isSslVerification()) {
+			    logger.warn("TLS certificate and hostname verification are DISABLED for {}", config.getBaseUrl());
+			}
+			
 			SSLContext sslContext = config.isSslVerification() ? SSLContexts.createDefault()
 					: SSLContexts.custom().loadTrustMaterial(null, (chain, authType) -> true).build();
 			HostnameVerifier verifier = config.isSslVerification()
@@ -80,15 +101,21 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 				.setSocketTimeout(config.getSocketTimeout()).setConnectionRequestTimeout(config.getConnectTimeout())
 				.setRedirectsEnabled(config.isFollowRedirects()).build();
 
-		HttpClientBuilder builder = HttpClients.custom().setConnectionManager(connectionManager)
-				.setConnectionManagerShared(true).setDefaultRequestConfig(requestConfig).disableAutomaticRetries();
+		HttpClientBuilder builder = HttpClients.custom()
+		        .setConnectionManager(connectionManager)
+		        .setConnectionManagerShared(true)
+		        .setDefaultRequestConfig(requestConfig)
+		        .setRedirectStrategy(new SafeRedirectStrategy())
+		        .disableAutomaticRetries();
+
+		builder.setRoutePlanner(new SystemDefaultRoutePlanner(ProxySelector.getDefault()));
 
 		if (authProvider == null) {
-			builder.evictExpiredConnections().evictIdleConnections(30, TimeUnit.SECONDS);
+		    builder.evictExpiredConnections().evictIdleConnections(30, TimeUnit.SECONDS);
 		}
 
 		if (authProvider instanceof HttpClientAwareAuthenticationProvider aware) {
-			aware.configureHttpClient(builder);
+		    aware.configureHttpClient(builder);
 		}
 
 		return builder.build();
@@ -102,9 +129,14 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	@Override
 	public CloseableHttpResponse execute(HttpUriRequest request, AuthenticationProvider auth) throws IOException {
 		CloseableHttpClient client = clientFor(auth);
+		
+		boolean repeatable = !(request instanceof HttpEntityEnclosingRequest enclosing)
+		        || enclosing.getEntity() == null
+		        || enclosing.getEntity().isRepeatable();
+		int maxAttempts = IDEMPOTENT_METHODS.contains(request.getMethod()) && repeatable ? config.getMaxRetries() + 1 : 1;
+		
 		prepareAuth(request, auth);
 
-		int maxAttempts = IDEMPOTENT_METHODS.contains(request.getMethod()) ? config.getMaxRetries() + 1 : 1;
 		boolean reauthenticated = false;
 		int attempt = 0;
 
@@ -112,19 +144,21 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 			attempt++;
 			CloseableHttpResponse response;
 			try {
-				response = client.execute(request);
+			    response = client.execute(request);
+			} catch (RequestCancelledException e) {
+			    throw e;
 			} catch (IOException e) {
-				if (attempt >= maxAttempts) {
-					throw e;
-				}
-				logger.debug("Retrying after I/O error (attempt {}/{}): {}", attempt, maxAttempts, e.getMessage());
-				pause(backoffMillis(attempt, null));
-				continue;
+			    if (attempt >= maxAttempts) {
+			        throw e;
+			    }
+			    logger.debug("Retrying after I/O error (attempt {}/{}): {}", attempt, maxAttempts, e.getMessage());
+			    pause(backoffMillis(attempt, null));
+			    continue;
 			}
 
 			int status = response.getStatusLine().getStatusCode();
 
-			if (status == 401 && auth != null && auth.retryOnUnauthorized() && !reauthenticated) {
+			if (status == 401 && auth != null && auth.retryOnUnauthorized() && !reauthenticated && repeatable) {
 				reauthenticated = true;
 				discard(response);
 				auth.refresh();
@@ -205,7 +239,49 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 			logger.debug("Error closing response", e);
 		}
 	}
+	
+	final class SafeRedirectStrategy extends DefaultRedirectStrategy {
+	    private static final Set<String> SENSITIVE = Set.of("authorization", "proxy-authorization", "cookie");
 
+	    @Override
+	    public HttpUriRequest getRedirect(HttpRequest request, HttpResponse response, HttpContext context)
+	            throws ProtocolException {
+	        HttpUriRequest redirect = super.getRedirect(request, response, context);
+	        HttpHost origin = HttpClientContext.adapt(context).getTargetHost();
+	        URI target = redirect.getURI();
+	        boolean sameOrigin = origin != null && target.getHost() != null
+	                && origin.getSchemeName().equalsIgnoreCase(target.getScheme())
+	                && origin.getHostName().equalsIgnoreCase(target.getHost())
+	                && originPort(origin) == port(target);
+	        List<Header> kept = new ArrayList<>();
+	        for (Header header : request.getAllHeaders()) {
+	            if (sameOrigin || !SENSITIVE.contains(header.getName().toLowerCase(Locale.ROOT))) {
+	                kept.add(header);
+	            }
+	        }
+	        if (kept.isEmpty()) {
+	            kept.add(new BasicHeader(HttpHeaders.ACCEPT, "*/*"));
+	        }
+	        redirect.setHeaders(kept.toArray(new Header[0]));
+	        return redirect;
+	    }
+
+	    private static int originPort(HttpHost host) {
+	        if (host.getPort() >= 0) {
+	            return host.getPort();
+	        }
+	        return "https".equalsIgnoreCase(host.getSchemeName()) ? 443 : 80;
+	    }
+
+
+	    private static int port(URI uri) {
+	        if (uri.getPort() >= 0) {
+	            return uri.getPort();
+	        }
+	        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+	    }
+	}
+	
 	@Override
 	public void close() throws IOException {
 		for (CloseableHttpClient client : clientCache.values()) {

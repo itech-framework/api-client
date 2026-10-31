@@ -1,6 +1,7 @@
 package io.github.itech_framework.api_client.processor;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
 import java.util.Locale;
 
@@ -10,6 +11,7 @@ import org.apache.logging.log4j.Logger;
 import io.github.itech_framework.api_client.annotations.ApiClient;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.handlers.DynamicApiClientInvocationHandler;
+import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.utils.PlaceholderResolver;
 import io.github.itech_framework.core.exceptions.FrameworkException;
 import io.github.itech_framework.core.module.ComponentRegistry;
@@ -64,20 +66,25 @@ public class DynamicApiProcessor {
 	private static ApiClientConfig createConfiguration(Class<?> clazz) {
 		ApiClient apiClient = findApiClient(clazz);
 
-		return ApiClientConfig.builder().baseUrl(resolveBaseUrl(apiClient, clazz))
+		ApiClientConfig.Builder builder = ApiClientConfig.builder().baseUrl(resolveBaseUrl(apiClient, clazz))
 				.connectTimeout(getIntProperty(clazz, "connection.timeout", null, 30000))
 				.socketTimeout(getIntProperty(clazz, "socket.timeout", null, 30000))
 				.maxConnections(getIntProperty(clazz, "max.connections", "maxConnections", 10))
 				.enableAsync(getBooleanProperty(clazz, "async.enabled", "enableAsync", true))
-                .asyncThreadPoolSize(getIntProperty(clazz, "async.pool.size", "asyncThreadPoolSize", 10))
-                .asyncQueueFullPolicy(getQueueFullPolicy(clazz))
+				.asyncThreadPoolSize(getIntProperty(clazz, "async.pool.size", "asyncThreadPoolSize", 10))
+				.asyncQueueFullPolicy(getQueueFullPolicy(clazz))
 				.sslVerification(getBooleanProperty(clazz, "ssl.verification", "sslVerification", true))
 				.followRedirects(getBooleanProperty(clazz, "follow.redirects", "followRedirects", true))
 				.enableLogging(getBooleanProperty(clazz, "logging.enabled", "enableLogging", true))
 				.loggingLevel(getStringProperty(clazz, "logging.level", "loggingLevel", "INFO"))
 				.maxRetries(getIntProperty(clazz, "retry.max", null, 2))
 				.retryBackoffMillis(getLongProperty(clazz, "retry.backoff", null, 200L))
-				.retryMaxBackoffMillis(getLongProperty(clazz, "retry.max.backoff", "retry.maxBackoff", 5000L)).build();
+				.retryMaxBackoffMillis(getLongProperty(clazz, "retry.max.backoff", "retry.maxBackoff", 5000L));
+
+		for (Class<? extends Interceptor> type : apiClient.interceptors()) {
+			builder.addInterceptor(newInterceptor(type, clazz));
+		}
+		return builder.build();
 	}
 
 	private static ApiClient findApiClient(Class<?> clazz) {
@@ -187,18 +194,29 @@ public class DynamicApiProcessor {
 		return Proxy.newProxyInstance(clazz.getClassLoader(), new Class[] { clazz },
 				new DynamicApiClientInvocationHandler(clazz, config));
 	}
-	
-    private static ApiClientConfig.QueueFullPolicy getQueueFullPolicy(Class<?> clazz) {
-        PropertyValue property = lookup(clazz, "async.queue.full", null);
-        if (!property.isSet()) {
-            return ApiClientConfig.QueueFullPolicy.REJECT;
-        }
-        String normalized = property.value().trim().toLowerCase(Locale.ROOT).replace('_', '-');
-        return switch (normalized) {
-            case "reject" -> ApiClientConfig.QueueFullPolicy.REJECT;
-            case "caller-runs" -> ApiClientConfig.QueueFullPolicy.CALLER_RUNS;
-            default -> throw invalidProperty(property.key(), property.value(), "reject or caller-runs",
-                    new IllegalArgumentException(normalized));
-        };
-    }
+
+	private static ApiClientConfig.QueueFullPolicy getQueueFullPolicy(Class<?> clazz) {
+		PropertyValue property = lookup(clazz, "async.queue.full", null);
+		if (!property.isSet()) {
+			return ApiClientConfig.QueueFullPolicy.REJECT;
+		}
+		String normalized = property.value().trim().toLowerCase(Locale.ROOT).replace('_', '-');
+		return switch (normalized) {
+		case "reject" -> ApiClientConfig.QueueFullPolicy.REJECT;
+		case "caller-runs" -> ApiClientConfig.QueueFullPolicy.CALLER_RUNS;
+		default -> throw invalidProperty(property.key(), property.value(), "reject or caller-runs",
+				new IllegalArgumentException(normalized));
+		};
+	}
+
+	private static Interceptor newInterceptor(Class<? extends Interceptor> type, Class<?> apiInterface) {
+		try {
+			Constructor<? extends Interceptor> constructor = type.getDeclaredConstructor();
+			constructor.setAccessible(true);
+			return constructor.newInstance();
+		} catch (ReflectiveOperationException e) {
+			throw new FrameworkException("Interceptor " + type.getName() + " on " + apiInterface.getName()
+					+ " needs a no-argument constructor", e);
+		}
+	}
 }

@@ -5,7 +5,16 @@ import org.apache.http.HttpResponse;
 import org.apache.http.protocol.HttpContext;
 
 public interface Interceptor {
-	void onRequest(HttpRequest request, HttpContext context);
-    void onResponse(HttpResponse response, HttpContext context);
-    void onError(Exception exception, HttpContext context);
+    String METHOD = "method";
+    String CONFIG = "config";
+    String TIMESTAMP = "timestamp";
+
+    default void onRequest(HttpRequest request, HttpContext context) {
+    }
+
+    default void onResponse(HttpResponse response, HttpContext context) {
+    }
+
+    default void onError(Exception exception, HttpContext context) {
+    }
 }
