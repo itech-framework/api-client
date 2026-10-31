@@ -13,6 +13,7 @@ import java.nio.charset.UnsupportedCharsetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
@@ -20,6 +21,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -84,7 +87,8 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		this.authFactory = new AuthProviderFactory(apiInterface);
 		this.transportProvider = config.getHttpTransportProvider() != null ? config.getHttpTransportProvider()
 				: new DefaultHttpTransportProvider(config);
-		this.executorService = config.isEnableAsync() ? createExecutor(apiInterface, config.getAsyncThreadPoolSize())
+		this.executorService = config.isEnableAsync()
+				? createExecutor(apiInterface, config.getAsyncThreadPoolSize(), config.getAsyncQueueFullPolicy())
 				: null;
 
 		initializeMethodHandlers();
@@ -94,16 +98,20 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 	}
 
-	private static ExecutorService createExecutor(Class<?> apiInterface, int requestedSize) {
+	private static ExecutorService createExecutor(Class<?> apiInterface, int requestedSize,
+			ApiClientConfig.QueueFullPolicy queueFullPolicy) {
 		int size = Math.max(1, requestedSize);
 		AtomicInteger counter = new AtomicInteger();
+		RejectedExecutionHandler rejectionHandler = queueFullPolicy == ApiClientConfig.QueueFullPolicy.CALLER_RUNS
+				? new ThreadPoolExecutor.CallerRunsPolicy()
+				: new ThreadPoolExecutor.AbortPolicy();
 		ThreadPoolExecutor executor = new ThreadPoolExecutor(size, size, 60L, TimeUnit.SECONDS,
 				new LinkedBlockingQueue<>(size * 100), runnable -> {
 					Thread thread = new Thread(runnable,
 							"api-client-" + apiInterface.getSimpleName() + "-" + counter.incrementAndGet());
 					thread.setDaemon(true);
 					return thread;
-				}, new ThreadPoolExecutor.CallerRunsPolicy());
+				}, rejectionHandler);
 		executor.allowCoreThreadTimeOut(true);
 		return executor;
 	}
@@ -183,13 +191,29 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 
 		private CompletableFuture<Object> invokeAsync(Object[] args) {
-			return CompletableFuture.supplyAsync(() -> {
-				try {
-					return invokeSync(args);
-				} catch (Exception e) {
-					throw new CompletionException(e);
+			if (executorService.isShutdown()) {
+				return CompletableFuture.failedFuture(
+						new IllegalStateException("API client " + apiInterface.getSimpleName() + " is closed"));
+			}
+			try {
+				return CompletableFuture.supplyAsync(() -> {
+					try {
+						return invokeSync(args);
+					} catch (Exception e) {
+						throw new CompletionException(e);
+					}
+				}, executorService);
+			} catch (RejectedExecutionException e) {
+				if (executorService.isShutdown()) {
+					return CompletableFuture.failedFuture(
+							new IllegalStateException("API client " + apiInterface.getSimpleName() + " is closed", e));
 				}
-			}, executorService);
+				return CompletableFuture
+						.failedFuture(new ApiException(
+								"Too many pending async requests for " + apiInterface.getSimpleName() + "."
+										+ method.getName() + ": the queue is full (see property async.queue.full)",
+								0, null, "QUEUE_FULL", e));
+			}
 		}
 
 		private Exception translate(IOException e) {
@@ -210,8 +234,8 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
 				throw new FrameworkException("Base url is not defined for " + apiInterface.getName()
 						+ ". Use @ApiClient(baseUrl = \"...\"), the property api.client."
-						+ apiInterface.getSimpleName().toLowerCase()
-						+ ".baseUrl, the property flexi.api.baseUrl, or a @BaseUrl String parameter.");
+						+ apiInterface.getSimpleName().toLowerCase(Locale.ROOT)
+						+ ".base.url, the property flexi.api.baseUrl, or a @BaseUrl String parameter.");
 			}
 
 			URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
@@ -400,7 +424,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 		return true;
 	}
-	
+
 	private static Map<String, List<String>> headersOf(HttpResponse response) {
 		Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 		for (Header header : response.getAllHeaders()) {

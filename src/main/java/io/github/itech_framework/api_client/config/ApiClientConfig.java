@@ -22,6 +22,8 @@ public class ApiClientConfig {
     private HttpTransportProvider httpTransportProvider;
     private boolean enableAsync = true;
     private int asyncThreadPoolSize = 10;
+    private QueueFullPolicy asyncQueueFullPolicy = QueueFullPolicy.REJECT;
+
     private boolean enableLogging = true;
     private String loggingLevel = "INFO";
     private int maxRetries = 2;
@@ -96,6 +98,11 @@ public class ApiClientConfig {
             return this;
         }
 
+        public Builder asyncQueueFullPolicy(QueueFullPolicy policy) {
+            config.asyncQueueFullPolicy = policy == null ? QueueFullPolicy.REJECT : policy;
+            return this;
+        }
+
         public Builder enableLogging(boolean enable) {
             config.enableLogging = enable;
             return this;
@@ -138,6 +145,7 @@ public class ApiClientConfig {
     public HttpTransportProvider getHttpTransportProvider() { return httpTransportProvider; }
     public boolean isEnableAsync() { return enableAsync; }
     public int getAsyncThreadPoolSize() { return asyncThreadPoolSize; }
+    public QueueFullPolicy getAsyncQueueFullPolicy() { return asyncQueueFullPolicy; }
     public boolean isEnableLogging() { return enableLogging; }
     public String getLoggingLevel() { return loggingLevel; }
     public int getMaxRetries() { return maxRetries; }
@@ -160,8 +168,15 @@ public class ApiClientConfig {
                 + ", interceptors=" + interceptors.size()
                 + ", enableAsync=" + enableAsync
                 + ", asyncThreadPoolSize=" + asyncThreadPoolSize
+                + ", asyncQueueFullPolicy=" + asyncQueueFullPolicy
                 + ", maxRetries=" + maxRetries
                 + ", retryBackoffMillis=" + retryBackoffMillis
                 + ", retryMaxBackoffMillis=" + retryMaxBackoffMillis + "}";
+    }
+    
+
+    public enum QueueFullPolicy {
+        REJECT,
+        CALLER_RUNS
     }
 }
