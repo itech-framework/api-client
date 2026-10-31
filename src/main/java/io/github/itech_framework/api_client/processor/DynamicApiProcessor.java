@@ -9,33 +9,46 @@ import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.handlers.DynamicApiClientInvocationHandler;
 import io.github.itech_framework.api_client.utils.PlaceholderResolver;
 import io.github.itech_framework.core.exceptions.FrameworkException;
+import io.github.itech_framework.core.module.ComponentRegistry;
 import io.github.itech_framework.core.processor.components_processor.ComponentProcessor;
 import io.github.itech_framework.core.resourcecs.CleanupRegistry;
-import io.github.itech_framework.core.store.ComponentStore;
 import io.github.itech_framework.core.utils.AnnotationUtils;
 import io.github.itech_framework.core.utils.PropertiesLoader;
 
 public class DynamicApiProcessor {
     private static final Map<Class<?>, ApiClientConfig> configCache = new ConcurrentHashMap<>();
 
-    public static void processApiClient(Class<?> clazz) {
+    public static void processApiClient(Class<?> clazz, ComponentRegistry registry, CleanupRegistry cleanupRegistry) {
         if (!isValidApiClient(clazz)) {
             return;
         }
 
         try {
-            ensureNotRegistered(clazz);
+            ensureNotRegistered(clazz, registry);
 
             ApiClientConfig config = configCache.computeIfAbsent(clazz, DynamicApiProcessor::createConfiguration);
 
             Object proxy = createDynamicProxy(clazz, config);
 
-            ComponentStore.registerComponent(clazz.getName(), proxy, ComponentProcessor.DEFAULT_LEVEL);
+            registry.registerComponent(clazz.getName(), proxy, ComponentProcessor.DEFAULT_LEVEL);
 
-            registerCleanup(clazz);
+            registerCleanup(proxy, cleanupRegistry);
 
         } catch (Exception e) {
             throw new FrameworkException("Failed to create API client proxy for: " + clazz.getName(), e);
+        }
+    }
+
+    private static void ensureNotRegistered(Class<?> clazz, ComponentRegistry registry) {
+        if (registry.hasComponent(clazz.getName())) {
+            throw new FrameworkException("Duplicate API client registration: " + clazz.getName());
+        }
+    }
+
+    private static void registerCleanup(Object proxy, CleanupRegistry cleanupRegistry) {
+        Object handler = Proxy.getInvocationHandler(proxy);
+        if (handler instanceof DynamicApiClientInvocationHandler apiHandler) {
+            cleanupRegistry.register(apiHandler::close, ComponentProcessor.DEFAULT_LEVEL);
         }
     }
 
@@ -43,11 +56,7 @@ public class DynamicApiProcessor {
         return AnnotationUtils.hasAnnotation(clazz, ApiClient.class) && clazz.isInterface();
     }
 
-    private static void ensureNotRegistered(Class<?> clazz) {
-        if (ComponentStore.components.containsKey(clazz.getName())) {
-            throw new FrameworkException("Duplicate API client registration: " + clazz.getName());
-        }
-    }
+    
 
     private static ApiClientConfig createConfiguration(Class<?> clazz) {
         ApiClient apiClient = clazz.getAnnotation(ApiClient.class);
@@ -102,19 +111,5 @@ public class DynamicApiProcessor {
     private static Object createDynamicProxy(Class<?> clazz, ApiClientConfig config) {
         return Proxy.newProxyInstance(clazz.getClassLoader(), new Class[] { clazz },
                 new DynamicApiClientInvocationHandler(clazz, config));
-    }
-
-    private static void registerCleanup(Class<?> clazz) {
-        String key = clazz.getName();
-
-        CleanupRegistry.register(() -> {
-            Object component = ComponentStore.getComponent(key);
-            if (component instanceof Proxy) {
-                Object handler = Proxy.getInvocationHandler(component);
-                if (handler instanceof DynamicApiClientInvocationHandler) {
-                    ((DynamicApiClientInvocationHandler) handler).close();
-                }
-            }
-        }, ComponentProcessor.DEFAULT_LEVEL);
     }
 }
