@@ -52,6 +52,20 @@ The module registers itself with the core framework (`ComponentInitializer`), so
 
 Multipart support uses Apache `httpmime`, which comes with the module as a transitive dependency. You do not need to add it yourself.
 
+### Logging
+
+The framework logs through the Log4j 2 API and does not bring a logging implementation. Add one to your application, for example Log4j Core:
+
+```xml
+<dependency>
+    <groupId>org.apache.logging.log4j</groupId>
+    <artifactId>log4j-core</artifactId>
+    <version>2.23.1</version>
+</dependency>
+```
+
+Without an implementation, Log4j prints `Log4j2 could not find a logging implementation` and the framework logs nothing. If you use Logback, add `log4j-to-slf4j` instead.
+
 ### Explanation Of Example Usage
 - Define an API interface: `UserApi.java`
 ```java
@@ -535,6 +549,8 @@ All keys go in `application.properties` (or a profile override such as `applicat
 
 Keys are per API interface: `api.client.<name>.<setting>`, where `<name>` is the **simple class name of the interface in lowercase**. For `UserApi` the prefix is `api.client.userapi.`. Properties are read when the application context starts.
 
+_Two interfaces with the same simple name (in different packages) read the same keys, so give every API interface a unique name._
+
 ```properties
 flexi.api.baseUrl=https://api.example.com
 
@@ -693,7 +709,8 @@ All three methods of `Interceptor` are optional (`default` methods), so implemen
 |--------|--------|
 | `onRequest(request, context)` | Before the request is sent. |
 | `onResponse(response, context)` | When a response arrives, for every status, before the response is turned into a result or an exception. |
-| `onError(exception, context)` | When the call fails: a network error, an error status or an exception from `onResponse`. |
+| `onError(exception, context)` | When the call fails: a network error or an error status. |
+
 
 The `HttpContext` carries the invoked method (`Interceptor.METHOD`, a `java.lang.reflect.Method`), the client configuration (`Interceptor.CONFIG`) and the start time in milliseconds (`Interceptor.TIMESTAMP`):
 
@@ -707,6 +724,8 @@ How interceptors run:
 - They run **once per call**, not once per retry or redirect. `onRequest` runs before the authentication headers are added, so you do not see `Authorization` there.
 - Async calls run the interceptors on the async pool thread.
 - An exception thrown by a hook is not caught by the client, so it fails the call. In `onRequest` the call stops before anything is sent, and `onError` is not called. An exception from `onResponse` is passed to `onError` and then thrown. Avoid throwing from `onResponse` and `onError`.
+- `onRequest` can stop a call by throwing. The exception reaches the caller before anything is sent, and `onError` is not called.
+- `onResponse` and `onError` are observers. If one of them throws, the client logs a warning, still calls the remaining interceptors and does not change the result of the call. A failure inside `onError` is added to the original exception as a suppressed exception, so the real error is never hidden.
 - Reading the body of the response in `onResponse` consumes it. Wrap the entity in a `BufferedHttpEntity` first if the client still has to read it. This also applies to `StreamResponse`.
 - To treat methods differently, read the method from the context and check your own marker annotation. No extra API is needed.
 
@@ -758,7 +777,7 @@ Default headers never override a `Content-Type` that the request body has alread
 ## Security Notes 🔒
 - Keep secrets in `application.properties` and reference them with `${...}` placeholders.
 - Set `ssl.verification=false` only for local development. It disables certificate and host name checks, and the client logs a warning at startup when it is off. It does not apply to OAuth2 token requests.
-- **Redirects:** when a redirect goes to a different scheme, host or port, the client drops the `Authorization`, `Proxy-Authorization` and `Cookie` headers. Redirects to the same origin keep them. All other headers are still copied, including an API key sent in a header (for example `X-Api-Key`) and headers added by a custom `AuthenticationProvider`. If a server you authenticate against could redirect to a different host, set `follow.redirects=false`.
+- **Redirects:** when a redirect goes to a different scheme, host or port, the client sends only `Accept`, `Accept-Charset`, `Accept-Language`, `Content-Type` and `User-Agent`, and drops every other header. That includes `Authorization`, `Proxy-Authorization`, `Cookie`, an API key sent in a header (for example `X-Api-Key`) and headers added by a custom `AuthenticationProvider`. Redirects to the same origin keep all headers. If you need a header to reach a different origin, set `follow.redirects=false` and follow the redirect yourself with `ApiResponse<T>`.
 - `@BaseUrl` sends the configured credentials to whatever URL you pass. Only pass values you trust.
 - Digest authentication without a `realm` offers its credentials to any host that sends a Digest challenge. Set the `realm` in `@DigestAuth`.
 - The startup log prints the base URL. Do not put `user:password@` in it.
@@ -796,8 +815,10 @@ public class UploadController implements Routable {
 - Invalid values in configuration properties (text for a number, or a flag that is not `true` or `false`) now fail at startup with a clear message.
 - The client uses the JVM proxy settings.
 - A warning is logged at startup when `ssl.verification=false`.
-- Redirects to another origin no longer forward `Authorization`, `Proxy-Authorization` or `Cookie`. This now applies to every client, including the ones that use `@BearerToken`, `@BasicAuth` and `@ApiKey`.
+- Redirects to another origin forward only `Accept`, `Accept-Charset`, `Accept-Language`, `Content-Type` and `User-Agent`. Every other header is dropped, including `Authorization`, `Cookie` and API keys sent in a header. This applies to every client, including the ones that use `@BearerToken`, `@BasicAuth` and `@ApiKey`.
 - A cancelled upload is no longer retried.
+- When the async queue is full, the returned future now fails with the error code `QUEUE_FULL` (the new default is `async.queue.full=reject`). Version 1.0.12 ran the call on the calling thread. Set `async.queue.full=caller-runs` to keep the old behavior.
+- The framework no longer brings `log4j-core`. Add a Log4j 2 implementation to your application (see [Logging](#logging)).
 
 **Compatible changes**
 - The property keys are now dotted (`max.connections`, `follow.redirects`, `retry.max.backoff` and so on). The old camelCase keys still work, with a deprecation warning.
