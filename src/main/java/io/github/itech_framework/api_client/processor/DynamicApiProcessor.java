@@ -48,7 +48,7 @@ public class DynamicApiProcessor {
     private static void registerCleanup(Object proxy, CleanupRegistry cleanupRegistry) {
         Object handler = Proxy.getInvocationHandler(proxy);
         if (handler instanceof DynamicApiClientInvocationHandler apiHandler) {
-            cleanupRegistry.register(apiHandler::close, ComponentProcessor.DEFAULT_LEVEL);
+        	cleanupRegistry.register(apiHandler::close, CleanupRegistry.AFTER_BEANS);
         }
     }
 
