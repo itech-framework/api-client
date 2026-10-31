@@ -241,8 +241,7 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	}
 	
 	final class SafeRedirectStrategy extends DefaultRedirectStrategy {
-	    private static final Set<String> SENSITIVE = Set.of("authorization", "proxy-authorization", "cookie");
-
+        private static final Set<String> CROSS_ORIGIN_ALLOWED = Set.of("accept", "accept-charset", "accept-language", "content-type", "user-agent");
 	    @Override
 	    public HttpUriRequest getRedirect(HttpRequest request, HttpResponse response, HttpContext context)
 	            throws ProtocolException {
@@ -255,7 +254,7 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	                && originPort(origin) == port(target);
 	        List<Header> kept = new ArrayList<>();
 	        for (Header header : request.getAllHeaders()) {
-	            if (sameOrigin || !SENSITIVE.contains(header.getName().toLowerCase(Locale.ROOT))) {
+	        	if (sameOrigin || CROSS_ORIGIN_ALLOWED.contains(header.getName().toLowerCase(Locale.ROOT))) {
 	                kept.add(header);
 	            }
 	        }

@@ -281,6 +281,29 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			return context;
 		}
 
+		private void notifyResponse(HttpResponse response, HttpContext context) {
+			for (Interceptor interceptor : config.getInterceptors()) {
+				try {
+					interceptor.onResponse(response, context);
+				} catch (RuntimeException failure) {
+					logger.warn("Interceptor {} failed in onResponse", interceptor.getClass().getName(), failure);
+				}
+			}
+		}
+
+		private void notifyError(Exception error, HttpContext context) {
+			for (Interceptor interceptor : config.getInterceptors()) {
+				try {
+					interceptor.onError(error, context);
+				} catch (RuntimeException failure) {
+					logger.warn("Interceptor {} failed in onError", interceptor.getClass().getName(), failure);
+					if (failure != error) {
+						error.addSuppressed(failure);
+					}
+				}
+			}
+		}
+		
 		private Object executeRequest(PreparedRequest prepared, HttpContext context) throws Exception {
 			for (Interceptor interceptor : config.getInterceptors()) {
 				interceptor.onRequest(prepared.request(), context);
@@ -289,16 +312,13 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			boolean keepOpen = false;
 			try {
 				response = transportProvider.execute(prepared.request(), prepared.auth());
-				for (Interceptor interceptor : config.getInterceptors()) {
-					interceptor.onResponse(response, context);
-				}
+				notifyResponse(response, context);
+				
 				Object result = processResponse(response);
 				keepOpen = result instanceof StreamResponse;
 				return result;
 			} catch (Exception e) {
-				for (Interceptor interceptor : config.getInterceptors()) {
-					interceptor.onError(e, context);
-				}
+				notifyError(e, context);
 				throw e;
 			} finally {
 				if (response != null && !keepOpen) {
