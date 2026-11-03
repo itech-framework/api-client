@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Java ${{ matrix.java }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            java: 17
+          - os: ubuntu-latest
+            java: 21
+          - os: windows-latest
+            java: 17
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: itech-framework/yo4h4sh2pr
+          path: core
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Install core
+        run: mvn -B -ntp -f core/pom.xml install -DskipTests -Dmaven.javadoc.skip=true -Dmaven.source.skip=true
+
+      - name: Build and test
+        run: mvn -B -ntp verify
