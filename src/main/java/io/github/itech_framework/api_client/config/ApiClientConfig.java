@@ -33,6 +33,8 @@ public class ApiClientConfig {
     private boolean throwOnError = true;
     private boolean normalizeUri = true;
 
+    private long maxBodyBytes = 0;
+    
     public static class Builder {
         private final ApiClientConfig config = new ApiClientConfig();
 
@@ -140,6 +142,11 @@ public class ApiClientConfig {
             config.normalizeUri = normalizeUri;
             return this;
         }
+        
+        public Builder maxBodyBytes(long maxBodyBytes) {
+            config.maxBodyBytes = Math.max(0, maxBodyBytes);
+            return this;
+        }
 
         public ApiClientConfig build() {
             return config;
@@ -167,6 +174,7 @@ public class ApiClientConfig {
     
     public boolean isThrowOnError() { return throwOnError; }
     public boolean isNormalizeUri() { return normalizeUri; }
+    public long getMaxBodyBytes() { return maxBodyBytes; }
 
     public static Builder builder() {
         return new Builder();

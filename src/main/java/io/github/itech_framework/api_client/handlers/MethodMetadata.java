@@ -272,26 +272,56 @@ public class MethodMetadata {
 	}
 
 	public List<NameValuePair> extractHeaders(Object[] args) {
-		List<NameValuePair> headers = new ArrayList<>(staticHeaders);
-		for (ParameterMetadata param : parameters) {
-			if (param.type != ParamType.HEADERS_MAP) {
-				continue;
-			}
-			Object arg = args[param.index];
-			if (arg == null) {
-				continue;
-			}
-			if (!(arg instanceof Map<?, ?> map)) {
-				throw new IllegalArgumentException(
-						"@Headers parameter must be a Map<String, String> in " + method.getName());
-			}
-			for (Map.Entry<?, ?> entry : map.entrySet()) {
-				if (entry.getKey() != null && entry.getValue() != null) {
-					headers.add(new BasicNameValuePair(entry.getKey().toString(), entry.getValue().toString()));
-				}
-			}
-		}
-		return headers;
+	    List<NameValuePair> headers = new ArrayList<>(staticHeaders);
+	    for (ParameterMetadata param : parameters) {
+	        if (param.type != ParamType.HEADERS_MAP) {
+	            continue;
+	        }
+	        Object arg = args[param.index];
+	        if (arg == null) {
+	            continue;
+	        }
+	        if (arg instanceof Map<?, ?> map) {
+	            for (Map.Entry<?, ?> entry : map.entrySet()) {
+	                if (entry.getKey() != null) {
+	                    addHeaderValues(headers, entry.getKey().toString(), entry.getValue());
+	                }
+	            }
+	        } else if (arg instanceof Iterable<?> items) {
+	            for (Object item : items) {
+	                if (item instanceof NameValuePair pair) {
+	                    addHeaderValues(headers, pair.getName(), pair.getValue());
+	                } else if (item instanceof Map.Entry<?, ?> entry && entry.getKey() != null) {
+	                    addHeaderValues(headers, entry.getKey().toString(), entry.getValue());
+	                } else {
+	                    throw new IllegalArgumentException(
+	                            "@Headers list items must be NameValuePair or Map.Entry in " + method.getName());
+	                }
+	            }
+	        } else {
+	            throw new IllegalArgumentException(
+	                    "@Headers parameter must be a Map, or a List of NameValuePair or Map.Entry in "
+	                            + method.getName());
+	        }
+	    }
+	    return headers;
+	}
+
+	private static void addHeaderValues(List<NameValuePair> headers, String name, Object value) {
+	    if (value == null) {
+	        return;
+	    }
+	    if (value instanceof Iterable<?> values) {
+	        for (Object item : values) {
+	            addHeaderValues(headers, name, item);
+	        }
+	    } else if (value instanceof Object[] values) {
+	        for (Object item : values) {
+	            addHeaderValues(headers, name, item);
+	        }
+	    } else {
+	        headers.add(new BasicNameValuePair(name, value.toString()));
+	    }
 	}
 
 	public Object extractBody(Object[] args) {

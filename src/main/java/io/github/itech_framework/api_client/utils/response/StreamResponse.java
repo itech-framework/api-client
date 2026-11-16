@@ -3,6 +3,9 @@ package io.github.itech_framework.api_client.utils.response;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 
 import org.apache.http.Header;
@@ -30,6 +33,12 @@ public final class StreamResponse implements Closeable {
 	public Optional<String> header(String name) {
 		Header header = response.getFirstHeader(name);
 		return header == null ? Optional.empty() : Optional.ofNullable(header.getValue());
+	}
+	
+	public long saveTo(Path target) throws IOException {
+	    try (InputStream in = inputStream()) {
+	        return Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+	    }
 	}
 
 	/** Content-Length, or -1 when unknown (chunked or transparently decompressed). */

@@ -1,6 +1,7 @@
 package io.github.itech_framework.api_client.handlers;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationHandler;
@@ -178,6 +179,51 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 				return CompletableFuture.failedFuture(e);
 			}
 		}
+		
+		private record Captured(byte[] bytes, boolean truncated) {
+		}
+
+		private Captured capture(CloseableHttpResponse response, boolean truncate) throws IOException {
+		    HttpEntity entity = response.getEntity();
+		    long limit = config.getMaxBodyBytes();
+		    if (limit <= 0) {
+		        return new Captured(EntityUtils.toByteArray(entity), false);
+		    }
+		    if (!truncate && entity.getContentLength() > limit) {
+		        throw tooLarge(response, limit);
+		    }
+		    InputStream in = entity.getContent();
+		    if (in == null) {
+		        return new Captured(new byte[0], false);
+		    }
+		    try (in) {
+		        ByteArrayOutputStream out = new ByteArrayOutputStream();
+		        byte[] buffer = new byte[8192];
+		        long total = 0;
+		        int read;
+		        while ((read = in.read(buffer)) != -1) {
+		            long room = limit - total;
+		            if (read > room) {
+		                if (!truncate) {
+		                    throw tooLarge(response, limit);
+		                }
+		                out.write(buffer, 0, (int) room);
+		                return new Captured(out.toByteArray(), true);
+		            }
+		            out.write(buffer, 0, read);
+		            total += read;
+		        }
+		        return new Captured(out.toByteArray(), false);
+		    }
+		}
+
+		private ApiException tooLarge(CloseableHttpResponse response, long limit) {
+		    return new ApiException("Response body is larger than " + limit + " bytes",
+		            response.getStatusLine().getStatusCode(), null, "BODY_TOO_LARGE")
+		            .withHeaders(headersOf(response));
+		}
+
+		
 
 		private Object invokeSync(Object[] args) throws Exception {
 			try {
@@ -407,16 +453,17 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    };
 		}
 
-		
-
 		private Object processResponse(CloseableHttpResponse response) throws IOException {
 		    int status = response.getStatusLine().getStatusCode();
 		    HttpEntity entity = response.getEntity();
 		    Class<?> resultClass = metadata.getResultClass();
 
 		    if (status >= 400 && !returnsErrorStatus(resultClass)) {
-		        String errorBody = entity == null ? null : EntityUtils.toString(entity, charsetOf(entity));
-		        throw errorDecoder.decode(status, errorBody, headersOf(response));
+		        Captured captured = entity == null ? null : capture(response, true);
+		        String errorBody = captured == null ? null : new String(captured.bytes(), charsetOf(entity));
+		        ApiException error = errorDecoder.decode(status, errorBody, headersOf(response));
+		        throw error.withBytes(captured == null ? null : captured.bytes(),
+		                captured != null && captured.truncated());
 		    }
 
 		    if (resultClass == StreamResponse.class) {
@@ -424,10 +471,40 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    }
 		    if (resultClass == ApiResponse.class) {
 		        JavaType inner = metadata.getResultJavaType().containedTypeOrUnknown(0);
-		        Object body = readBody(entity, status, inner.getRawClass(), inner);
+		        Object body = readBody(response, entity, status, inner.getRawClass(), inner);
 		        return new ApiResponse<>(status, headersOf(response), body);
 		    }
-		    return readBody(entity, status, resultClass, metadata.getResultJavaType());
+		    return readBody(response, entity, status, resultClass, metadata.getResultJavaType());
+		}
+
+		private Object readBody(CloseableHttpResponse response, HttpEntity entity, int status, Class<?> resultClass,
+		        JavaType javaType) throws IOException {
+		    if (resultClass == void.class || resultClass == Void.class) {
+		        EntityUtils.consumeQuietly(entity);
+		        return null;
+		    }
+		    if (entity == null) {
+		        return null;
+		    }
+		    byte[] bytes = capture(response, false).bytes();
+		    if (resultClass == String.class) {
+		        return new String(bytes, charsetOf(entity));
+		    }
+		    if (resultClass == byte[].class) {
+		        return bytes;
+		    }
+		    if (resultClass == InputStream.class) {
+		        return new ByteArrayInputStream(bytes);
+		    }
+		    if (isBlank(bytes)) {
+		        return null;
+		    }
+		    try {
+		        return JsonUtils.fromJson(bytes, javaType);
+		    } catch (FrameworkException e) {
+		        String snippet = new String(bytes, 0, Math.min(bytes.length, 512), StandardCharsets.UTF_8);
+		        throw new ApiException("Failed to parse JSON response", status, snippet, "JSON_PARSE_ERROR", e);
+		    }
 		}
 
 		private boolean returnsErrorStatus(Class<?> resultClass) {
@@ -444,35 +521,6 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    return inner == String.class || inner == byte[].class || inner == InputStream.class;
 		}
 
-		private Object readBody(HttpEntity entity, int status, Class<?> resultClass, JavaType javaType)
-				throws IOException {
-			if (resultClass == void.class || resultClass == Void.class) {
-				EntityUtils.consumeQuietly(entity);
-				return null;
-			}
-			if (entity == null) {
-				return null;
-			}
-			if (resultClass == String.class) {
-				return EntityUtils.toString(entity, charsetOf(entity));
-			}
-			byte[] bytes = EntityUtils.toByteArray(entity);
-			if (resultClass == byte[].class) {
-				return bytes;
-			}
-			if (resultClass == InputStream.class) {
-				return new ByteArrayInputStream(bytes);
-			}
-			if (isBlank(bytes)) {
-				return null;
-			}
-			try {
-				return JsonUtils.fromJson(bytes, javaType);
-			} catch (FrameworkException e) {
-				String snippet = new String(bytes, 0, Math.min(bytes.length, 512), StandardCharsets.UTF_8);
-				throw new ApiException("Failed to parse JSON response", status, snippet, "JSON_PARSE_ERROR", e);
-			}
-		}
 	}
 
 	private static final class EntityRequest extends HttpEntityEnclosingRequestBase {

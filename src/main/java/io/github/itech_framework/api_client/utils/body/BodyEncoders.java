@@ -17,11 +17,11 @@ import org.apache.http.HttpEntity;
 import org.apache.http.NameValuePair;
 import org.apache.http.ParseException;
 import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.utils.URLEncodedUtils;
 import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.FileEntity;
 import org.apache.http.entity.InputStreamEntity;
-import org.apache.http.entity.StringEntity;
 import org.apache.http.entity.mime.HttpMultipartMode;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.message.BasicNameValuePair;
@@ -116,9 +116,10 @@ public final class BodyEncoders {
 	}
 
 	private static HttpEntity text(Object body, String contentType) {
-		ContentType type = withCharset(parse(contentType, TEXT_UTF8));
-		String text = body instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : body.toString();
-		return new StringEntity(text, type);
+	    ContentType type = parse(contentType, TEXT_UTF8);
+	    Charset charset = type.getCharset() != null ? type.getCharset() : StandardCharsets.UTF_8;
+	    byte[] bytes = body instanceof byte[] raw ? raw : body.toString().getBytes(charset);
+	    return new ByteArrayEntity(bytes, type);
 	}
 
 	private static HttpEntity binary(Object body, String contentType) {
@@ -165,7 +166,10 @@ public final class BodyEncoders {
 			throw new IllegalArgumentException(
 					"A form body must be a Map or a List<NameValuePair>, but was " + body.getClass().getName());
 		}
-		return new UrlEncodedFormEntity(fields, charset);
+		if (contentType == null || contentType.isBlank()) {
+		    return new UrlEncodedFormEntity(fields, charset);
+		}
+		return new ByteArrayEntity(URLEncodedUtils.format(fields, charset).getBytes(charset), type);
 	}
 
 	private static void addField(List<NameValuePair> fields, String name, Object value) {

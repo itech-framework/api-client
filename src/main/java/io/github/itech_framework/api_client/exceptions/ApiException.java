@@ -15,6 +15,9 @@ public class ApiException extends RuntimeException {
 	private final String errorCode;
 
 	private Map<String, List<String>> headers = Map.of();
+	
+	private byte[] responseBytes;
+	private boolean bodyTruncated;
 
 	public ApiException(String message, int statusCode, String responseBody, String errorCode) {
 		super(message);
@@ -33,6 +36,13 @@ public class ApiException extends RuntimeException {
 	public ApiException withHeaders(Map<String, List<String>> headers) {
 		this.headers = headers == null ? Map.of() : headers;
 		return this;
+	}
+	
+
+	public ApiException withBytes(byte[] bytes, boolean truncated) {
+	    this.responseBytes = bytes;
+	    this.bodyTruncated = truncated;
+	    return this;
 	}
 
 	// Getters
@@ -57,4 +67,13 @@ public class ApiException extends RuntimeException {
 		return values == null || values.isEmpty() ? Optional.empty() : Optional.of(values.get(0));
 	}
 
+	public byte[] getResponseBytes() {
+	    return responseBytes == null ? null : responseBytes.clone();
+	}
+
+	public boolean isBodyTruncated() {
+	    return bodyTruncated;
+	}
+
+	
 }
