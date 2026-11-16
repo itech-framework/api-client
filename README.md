@@ -210,7 +210,7 @@ boolean ok = response.isSuccessful(); // status 200-299
 | `body()` | The parsed body, or `null` when it is empty. |
 | `isSuccessful()` | `true` for status 200 to 299. |
 
-Error statuses (400 and higher) still throw an `ApiException`. Use `ApiResponse<Void>` when you only need the status and headers. It also works inside a `CompletableFuture`.
+By default, error statuses (400 and higher) throw an `ApiException`. With `throw.on.error=false`, a method that returns `ApiResponse<String>`, `ApiResponse<byte[]>` or `ApiResponse<InputStream>` returns the error status, headers and body instead. Other result types still throw, because an error body usually does not fit the type. See [Responses and URLs](#responses-and-urls). Use `ApiResponse<Void>` when you only need the status and headers. It also works inside a `CompletableFuture`.
 
 #### Large downloads with StreamResponse
 
@@ -234,9 +234,10 @@ try (StreamResponse response = api.download("42")) {
 | `header(name)` | The first value of a header as an `Optional<String>`. |
 | `contentLength()` | The `Content-Length`, or `-1` when it is unknown. |
 | `inputStream()` | The response body as a stream. |
+| `saveTo(path)` | Copies the body to a file, replaces the file if it exists, and returns the number of bytes written. |
 | `close()` | Releases the connection. Closing early aborts the transfer without reading the rest. |
 
-With `CompletableFuture<StreamResponse>` the caller still has to close the response. If an interceptor reads the body in `onResponse`, the stream is already consumed.
+With `CompletableFuture<StreamResponse>` the caller still has to close the response. If an interceptor reads the body in `onResponse`, the stream is already consumed. An error status (400 or higher) throws an `ApiException` by default. With `throw.on.error=false`, the `StreamResponse` is returned instead, so check `status()` before you read the body. `max.body.bytes` does not limit a `StreamResponse`.
 
 ## Request bodies
 
@@ -572,6 +573,9 @@ api.client.userapi.logging.level=INFO
 api.client.userapi.retry.max=2
 api.client.userapi.retry.backoff=200
 api.client.userapi.retry.max.backoff=5000
+api.client.userapi.throw.on.error=true
+api.client.userapi.normalize.uri=true
+api.client.userapi.max.body.bytes=0
 ```
 
 A value that cannot be read (text where a number is expected, or anything other than `true` or `false` for a flag) fails at startup with a `FrameworkException` that names the property and the value. An empty value counts as "not set".
@@ -610,6 +614,14 @@ The async pool queues up to 100 waiting calls per pool thread. When the queue is
 
 Cancelling a returned `CompletableFuture` does not stop a request that is already running.
 
+### Responses and URLs
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api.client.<n>.throw.on.error` | `true` | When `false`, a status of 400 or higher is returned instead of thrown, for methods that return `StreamResponse`, `ApiResponse<String>`, `ApiResponse<byte[]>` or `ApiResponse<InputStream>`. All other return types, including `ApiResponse<Void>` and DTOs, still throw. |
+| `api.client.<n>.normalize.uri` | `true` | Let the HTTP library normalize the request URI. It collapses duplicate slashes. Set `false` to send the path as it was built. |
+| `api.client.<n>.max.body.bytes` | `0` | The largest response body the client reads into memory, in bytes. `0` means no limit. A successful body over the limit fails with the error code `BODY_TOO_LARGE`. An error body is cut at the limit. A `StreamResponse` is never limited. |
+
 ### Retry
 
 | Key | Default | Description |
@@ -629,7 +641,7 @@ Cancelling a returned `CompletableFuture` does not stop a request that is alread
 
 ## Error Handling 🚨
 
-Responses with status `400` or higher throw an unchecked `ApiException` (or a subclass):
+Responses with status `400` or higher throw an unchecked `ApiException` (or a subclass), unless you turned off `throw.on.error` (see [Responses and URLs](#responses-and-urls)):
 
 | Status | Exception |
 |--------|-----------|
@@ -644,7 +656,16 @@ Responses with status `400` or higher throw an unchecked `ApiException` (or a su
 | other 4xx | `ClientErrorException` |
 | other 5xx | `ServerErrorException` |
 
-Every `ApiException` provides `getStatusCode()`, `getResponseBody()` and `getErrorCode()`. The exceptions do not carry the response headers.
+Every `ApiException` provides `getStatusCode()`, `getResponseBody()` and `getErrorCode()`. Exceptions for error responses also carry the response data:
+
+| Method | Description |
+|--------|-------------|
+| `getHeaders()` | All response headers as a `Map<String, List<String>>`, with case-insensitive names. |
+| `header(name)` | The first value of a header as an `Optional<String>`. |
+| `getResponseBytes()` | The raw body bytes, or `null` when there was no body. |
+| `isBodyTruncated()` | `true` when the body was cut at `max.body.bytes`. `getResponseBody()` then holds the text of the cut body. |
+
+Exceptions created by the client itself, such as `IO_ERROR` and `QUEUE_FULL`, have no headers and no bytes.
 
 The error code is read from the JSON error body, from the fields `code`, `errorCode`, `error` (text) or `error.code`. When none is found it is `UNKNOWN_ERROR`. Some codes come from the client itself:
 
@@ -653,6 +674,7 @@ The error code is read from the JSON error body, from the fields `code`, `errorC
 | `IO_ERROR` | `0` | A network failure, unless the interface method declares a compatible checked exception. In that case the exception is thrown as it is. |
 | `QUEUE_FULL` | `0` | The async queue is full and `async.queue.full` is `reject`. |
 | `JSON_PARSE_ERROR` | response status | The response body is not valid JSON for the return type. |
+| `BODY_TOO_LARGE` | response status | A successful response body is larger than `max.body.bytes`. The exception carries the status and the headers. |
 
 Invalid body input, such as a missing upload file, a wrong body type for the chosen format or an invalid content type, fails with an `IllegalArgumentException` before the request is sent.
 
@@ -707,16 +729,17 @@ public interface UserApi {
 }
 ```
 
-All three methods of `Interceptor` are optional (`default` methods), so implement only the ones you need.
+All four methods of `Interceptor` are optional (`default` methods), so implement only the ones you need.
 
 | Method | Called |
 |--------|--------|
-| `onRequest(request, context)` | Before the request is sent. |
+| `onRequest(request, context)` | Once per call, before the request is built into its final form. The authentication headers are not on the request yet. |
+| `onBeforeSend(request, context)` | Right before each attempt is sent, after authentication has been applied. It runs again for every retry. |
 | `onResponse(response, context)` | When a response arrives, for every status, before the response is turned into a result or an exception. |
 | `onError(exception, context)` | When the call fails: a network error or an error status. |
 
 
-The `HttpContext` carries the invoked method (`Interceptor.METHOD`, a `java.lang.reflect.Method`), the client configuration (`Interceptor.CONFIG`) and the start time in milliseconds (`Interceptor.TIMESTAMP`):
+The `HttpContext` carries the invoked method (`Interceptor.METHOD`, a `java.lang.reflect.Method`), the client configuration (`Interceptor.CONFIG`) and the start time in milliseconds (`Interceptor.TIMESTAMP`). In `onBeforeSend` it also carries the attempt number (`Interceptor.ATTEMPT`, an `Integer` that starts at `1` and rises with every retry):
 
 ```java
 Method method = (Method) context.getAttribute(Interceptor.METHOD);
@@ -725,13 +748,32 @@ Method method = (Method) context.getAttribute(Interceptor.METHOD);
 How interceptors run:
 
 - They run in the order of the array. The framework creates **one instance per interface**, and it is used by all calls (also from different threads), so keep it thread-safe. A class without a no-argument constructor fails at startup with a message that names it.
-- They run **once per call**, not once per retry or redirect. `onRequest` runs before the authentication headers are added, so you do not see `Authorization` there.
+- `onRequest`, `onResponse` and `onError` run **once per call**, not once per retry or redirect. `onRequest` runs before the authentication headers are added, so you do not see `Authorization` there. `onBeforeSend` runs once per attempt (not once per redirect hop), and it does see `Authorization`, `Cookie` and API-key headers.
+- `onBeforeSend` is an observer. If it throws, the client logs a warning and sends the request anyway. It sees the request as the client built it. Headers that Apache adds later, such as `Host`, `Content-Length`, `User-Agent` and `Accept-Encoding`, are not on it yet.
+- A custom `HttpTransportProvider` triggers `onBeforeSend` only when it overrides `execute(request, auth, context)`. The three-argument method has a default that calls the old two-argument `execute`, so existing transports still work, but they never call `onBeforeSend`.
 - Async calls run the interceptors on the async pool thread.
 - An exception thrown by a hook is not caught by the client, so it fails the call. In `onRequest` the call stops before anything is sent, and `onError` is not called. An exception from `onResponse` is passed to `onError` and then thrown. Avoid throwing from `onResponse` and `onError`.
 - `onRequest` can stop a call by throwing. The exception reaches the caller before anything is sent, and `onError` is not called.
 - `onResponse` and `onError` are observers. If one of them throws, the client logs a warning, still calls the remaining interceptors and does not change the result of the call. A failure inside `onError` is added to the original exception as a suppressed exception, so the real error is never hidden.
 - Reading the body of the response in `onResponse` consumes it. Wrap the entity in a `BufferedHttpEntity` first if the client still has to read it. This also applies to `StreamResponse`.
 - To treat methods differently, read the method from the context and check your own marker annotation. No extra API is needed.
+
+### Hiding secrets in logs
+
+Because `onBeforeSend` sees the real credentials, do not print its headers as they are. `HeaderRedactor` replaces the values of sensitive headers with `***` and leaves the others alone:
+
+```java
+public class LogInterceptor implements Interceptor {
+    @Override
+    public void onBeforeSend(HttpRequest request, HttpContext context) {
+        log.info("Sending headers: {}", HeaderRedactor.defaults().headers(request));
+    }
+}
+```
+
+`Authorization` and `Proxy-Authorization` keep their scheme (`Bearer ***`). `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key` and `X-Auth-Token` are fully masked. Names are matched ignoring case. Add your own header names with `HeaderRedactor.defaults().with("X-My-Secret")`. `redact(Map<String, List<String>>)` does the same for response headers, such as `ApiResponse.headers()` or `ApiException.getHeaders()`.
+
+`HeaderRedactor` only changes what you display. It does not change what is sent, and it does not hide a key that you send in the query string.
 
 If you create the client yourself with an `ApiClientConfig` (see below), `@ApiClient(interceptors = ...)` is not read. Add them with `addInterceptor(...)`.
 
@@ -775,6 +817,9 @@ Call `handler.close()` when you are done, to stop the async pool and the connect
 | `asyncQueueFullPolicy(QueueFullPolicy)` | `REJECT` | `REJECT` or `CALLER_RUNS`. |
 | `enableLogging(boolean)` / `loggingLevel(String)` | `true` / `INFO` | Logging settings. |
 | `maxRetries(int)` / `retryBackoffMillis(long)` / `retryMaxBackoffMillis(long)` | `2` / `200` / `5000` | Retry settings. |
+| `throwOnError(boolean)` | `true` | Return error statuses instead of throwing, for `StreamResponse` and `ApiResponse<String\|byte[]\|InputStream>`. |
+| `normalizeUri(boolean)` | `true` | Let the HTTP library normalize the request URI. |
+| `maxBodyBytes(long)` | `0` | Largest response body read into memory. `0` means no limit. |
 
 Default headers never override a `Content-Type` that the request body has already set.
 
@@ -806,6 +851,20 @@ public class UploadController implements Routable {
     }
 }
 ```
+
+## Upgrading to 1.1.1 ⬆️
+
+**Behavior changes**
+- A body is now sent on `GET`, `DELETE` and `OPTIONS` calls (never on `HEAD`). Earlier versions dropped it silently.
+- A text or form body keeps the `Content-Type` you typed exactly. The client adds `; charset=UTF-8` only when you gave no content type.
+- A form body without an explicit content type is now encoded as UTF-8. It was encoded as ISO-8859-1 before, which turned characters outside Latin-1 into `?`.
+- A call that passes a `@BaseUrl` and has no method path, `@Path` or `@Query` sends the URL exactly as you typed it.
+- `@Headers` accepts a `List` of `NameValuePair` or `Map.Entry`, and a `Map` value may be a collection or an array. Both send repeated headers.
+
+**Compatible changes**
+- `ApiException` carries the response headers (`getHeaders()`, `header(name)`) and the raw body (`getResponseBytes()`, `isBodyTruncated()`).
+- New settings: `throw.on.error` (default `true`), `normalize.uri` (default `true`) and `max.body.bytes` (default `0`, no limit). With the defaults, behaviour does not change.
+- New: `Interceptor.onBeforeSend` and `Interceptor.ATTEMPT`, a three-argument `HttpTransportProvider.execute` with a default, `StreamResponse.saveTo(path)`, the error code `BODY_TOO_LARGE` and `HeaderRedactor`.
 
 ## Upgrading to 1.1.0 ⬆️
 
