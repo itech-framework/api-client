@@ -146,7 +146,7 @@ public final class BodyEncoders {
 	}
 
 	private static HttpEntity form(Object body, String contentType) {
-		ContentType type = parse(contentType, ContentType.APPLICATION_FORM_URLENCODED);
+		ContentType type = parse(contentType, ContentType.APPLICATION_FORM_URLENCODED.withCharset(StandardCharsets.UTF_8));
 		Charset charset = type.getCharset() != null ? type.getCharset() : StandardCharsets.UTF_8;
 		List<NameValuePair> fields = new ArrayList<>();
 		if (body instanceof Map<?, ?> map) {
