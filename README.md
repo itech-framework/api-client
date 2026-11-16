@@ -142,7 +142,7 @@ Every interface method needs exactly one of these. `default` and `static` method
 | `@Body` | parameter | The request body. Format chosen automatically, or set with `@Body(type = ..., contentType = "...")`. See [Request bodies](#request-bodies). |
 | `@Part("name")` | parameter | One part of a `multipart/form-data` request (files, text, JSON). |
 | `@Field("name")` | parameter | One field of an `application/x-www-form-urlencoded` request. |
-| `@Headers` | parameter | A `Map<String, String>` of extra headers for this call. |
+| `@Headers` | parameter | Extra headers for this call. Pass a `Map<String, ?>` (a collection or array value sends one header per item) or a `List` of `NameValuePair` or `Map.Entry` to repeat a header name. `null` values are skipped. |
 | `@BaseUrl` | parameter | A `String` that replaces the base URL for this call. |
 | `@Auth` | parameter | An `AuthenticationProvider` used for this call only. |
 | `@Header(name, value)` | method | A fixed header. Repeatable. |
@@ -246,7 +246,7 @@ A request body comes from exactly one of these:
 - one or more `@Part` parameters (sent as multipart), or
 - one or more `@Field` parameters (sent as a form).
 
-`@Body` cannot be combined with `@Part` or `@Field`, and `@Part` cannot be combined with `@Field`. A wrong combination fails as soon as the client is created. A `null` body is simply not sent, and bodies are only sent for methods that support them (POST, PUT, PATCH).
+`@Body` cannot be combined with `@Part` or `@Field`, and `@Part` cannot be combined with `@Field`. A wrong combination fails as soon as the client is created. A `null` body is simply not sent. A body is sent for every method except `HEAD`, which never carries one. That includes `GET`, `DELETE` and `OPTIONS`.
 
 ### Body types
 
@@ -276,6 +276,8 @@ The `Content-Type` of a request is the first of these that is set:
 1. `@Body(contentType = "...")`
 2. A `Content-Type` header from `@Header` or `@Headers`
 3. The default of the resolved body type
+
+A `Content-Type` you type is sent exactly as written for text and form bodies. The client adds `; charset=UTF-8` only when you gave no content type at all, so `contentType = "application/xml"` is sent as `application/xml`. When you type a charset, such as `text/plain; charset=ISO-8859-1`, the body is encoded in that charset. Without a charset in the typed value, the body bytes are UTF-8.
 
 ```java
 @POST("/articles")
@@ -321,6 +323,8 @@ TokenResponse token(@Body(type = BodyType.FORM) Map<String, String> form);
 ```
 
 Setting the header `Content-Type: application/x-www-form-urlencoded` with a `Map` body also works. `null` values are skipped.
+
+Form values are percent-encoded as UTF-8 unless the content type you set names another charset. Before 1.1.1, a form without an explicit content type was encoded as ISO-8859-1, which turned characters outside Latin-1 into `?`.
 
 ### Multipart uploads (`multipart/form-data`)
 
@@ -448,7 +452,7 @@ The base URL is resolved in this order, and the first non-empty value wins:
 3. The property `api.client.<interfacename>.base.url`
 4. The global property `flexi.api.baseUrl`
 
-If none of them is set, the call fails with a `FrameworkException` that lists these options. Any path in the base URL is kept and the method path is appended to it.
+If none of them is set, the call fails with a `FrameworkException` that lists these options. Any path in the base URL is kept and the method path is appended to it. When a call passes a `@BaseUrl` and the method has no path, no `@Path` and no `@Query` parameters (for example `@GET("")`), the URL is sent exactly as you typed it: repeated query keys, a key without a value, `+`, `%20` and `%2F` all stay as written. This suits tools that send user-typed URLs. When the method has a path, the path and query are rebuilt from their parts. By default (`normalize.uri=true`) the HTTP library also collapses duplicate slashes, so `/a//b` becomes `/a/b`. Set `normalize.uri=false` to send them unchanged. Dot segments such as `/a/../b` are sent as written in both modes.
 
 ## Authentication 🔐
 
