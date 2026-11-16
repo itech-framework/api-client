@@ -1,5 +1,8 @@
 package io.github.itech_framework.api_client.handlers;
 
+import java.util.List;
+import java.util.Map;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -45,6 +48,10 @@ public class ErrorDecoder {
             yield new ApiException(message, statusCode, responseBody, errorCode);
         }
         };
+    }
+    
+    public ApiException decode(int statusCode, String responseBody, Map<String, List<String>> headers) {
+        return decode(statusCode, responseBody).withHeaders(headers);
     }
 
     private String extractErrorCode(String body) {

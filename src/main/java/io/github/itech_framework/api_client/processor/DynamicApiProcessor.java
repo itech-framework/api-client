@@ -79,7 +79,9 @@ public class DynamicApiProcessor {
 				.loggingLevel(getStringProperty(clazz, "logging.level", "loggingLevel", "INFO"))
 				.maxRetries(getIntProperty(clazz, "retry.max", null, 2))
 				.retryBackoffMillis(getLongProperty(clazz, "retry.backoff", null, 200L))
-				.retryMaxBackoffMillis(getLongProperty(clazz, "retry.max.backoff", "retry.maxBackoff", 5000L));
+				.retryMaxBackoffMillis(getLongProperty(clazz, "retry.max.backoff", "retry.maxBackoff", 5000L))
+				.throwOnError(getBooleanProperty(clazz, "throw.on.error", "throwOnError", true))
+				.normalizeUri(getBooleanProperty(clazz, "normalize.uri", "normalizeUri", true));
 
 		for (Class<? extends Interceptor> type : apiClient.interceptors()) {
 			builder.addInterceptor(newInterceptor(type, clazz));

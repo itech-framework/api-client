@@ -8,6 +8,11 @@ public interface Interceptor {
     String METHOD = "method";
     String CONFIG = "config";
     String TIMESTAMP = "timestamp";
+    
+    String ATTEMPT = "attempt";
+
+    default void onBeforeSend(HttpRequest request, HttpContext context) {
+    }
 
     default void onRequest(HttpRequest request, HttpContext context) {
     }

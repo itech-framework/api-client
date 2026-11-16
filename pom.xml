@@ -6,7 +6,7 @@
 
 	<groupId>io.github.itech-framework</groupId>
 	<artifactId>api-client</artifactId>
-	<version>1.1.0</version>
+	<version>1.1.1</version>
 	<packaging>jar</packaging>
 
 	<name>Flexitech FX - API Client Module</name>

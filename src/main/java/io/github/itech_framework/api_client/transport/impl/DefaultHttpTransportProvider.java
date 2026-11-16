@@ -51,6 +51,7 @@ import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.auth.HttpClientAwareAuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.exceptions.RequestCancelledException;
+import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 
 public class DefaultHttpTransportProvider implements HttpTransportProvider {
@@ -99,7 +100,8 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	private CloseableHttpClient buildHttpClient(AuthenticationProvider authProvider) {
 		RequestConfig requestConfig = RequestConfig.custom().setConnectTimeout(config.getConnectTimeout())
 				.setSocketTimeout(config.getSocketTimeout()).setConnectionRequestTimeout(config.getConnectTimeout())
-				.setRedirectsEnabled(config.isFollowRedirects()).build();
+				.setRedirectsEnabled(config.isFollowRedirects())
+				.setNormalizeUri(config.isNormalizeUri()).build();
 
 		HttpClientBuilder builder = HttpClients.custom()
 		        .setConnectionManager(connectionManager)
@@ -128,6 +130,12 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 	@Override
 	public CloseableHttpResponse execute(HttpUriRequest request, AuthenticationProvider auth) throws IOException {
+	    return execute(request, auth, new BasicHttpContext());
+	}
+
+	@Override
+	public CloseableHttpResponse execute(HttpUriRequest request, AuthenticationProvider auth,
+	        HttpContext context) throws IOException {
 		CloseableHttpClient client = clientFor(auth);
 		
 		boolean repeatable = !(request instanceof HttpEntityEnclosingRequest enclosing)
@@ -142,6 +150,8 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 		while (true) {
 			attempt++;
+			context.setAttribute(Interceptor.ATTEMPT, attempt);
+			notifyBeforeSend(request, context);
 			CloseableHttpResponse response;
 			try {
 			    response = client.execute(request);
@@ -177,6 +187,16 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 			return response;
 		}
+	}
+	
+	private void notifyBeforeSend(HttpUriRequest request, HttpContext context) {
+	    for (Interceptor interceptor : config.getInterceptors()) {
+	        try {
+	            interceptor.onBeforeSend(request, context);
+	        } catch (RuntimeException failure) {
+	            logger.warn("Interceptor {} failed in onBeforeSend", interceptor.getClass().getName(), failure);
+	        }
+	    }
 	}
 
 	private CloseableHttpClient clientFor(AuthenticationProvider auth) {

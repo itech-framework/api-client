@@ -29,6 +29,9 @@ public class ApiClientConfig {
     private int maxRetries = 2;
     private long retryBackoffMillis = 200;
     private long retryMaxBackoffMillis = 5000;
+    
+    private boolean throwOnError = true;
+    private boolean normalizeUri = true;
 
     public static class Builder {
         private final ApiClientConfig config = new ApiClientConfig();
@@ -127,6 +130,16 @@ public class ApiClientConfig {
             config.retryMaxBackoffMillis = Math.max(0, millis);
             return this;
         }
+        
+        public Builder throwOnError(boolean throwOnError) {
+            config.throwOnError = throwOnError;
+            return this;
+        }
+
+        public Builder normalizeUri(boolean normalizeUri) {
+            config.normalizeUri = normalizeUri;
+            return this;
+        }
 
         public ApiClientConfig build() {
             return config;
@@ -151,6 +164,9 @@ public class ApiClientConfig {
     public int getMaxRetries() { return maxRetries; }
     public long getRetryBackoffMillis() { return retryBackoffMillis; }
     public long getRetryMaxBackoffMillis() { return retryMaxBackoffMillis; }
+    
+    public boolean isThrowOnError() { return throwOnError; }
+    public boolean isNormalizeUri() { return normalizeUri; }
 
     public static Builder builder() {
         return new Builder();

@@ -7,6 +7,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
@@ -36,6 +37,7 @@ import org.apache.http.NameValuePair;
 import org.apache.http.ParseException;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpEntityEnclosingRequestBase;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpHead;
 import org.apache.http.client.methods.HttpOptions;
@@ -227,50 +229,71 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 
 		private PreparedRequest buildRequest(Object[] args) throws Exception {
-			String effectiveBaseUrl = metadata.extractBaseUrl(args);
-			if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
-				effectiveBaseUrl = metadata.getFullUrl();
-			}
-			if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
-				throw new FrameworkException("Base url is not defined for " + apiInterface.getName()
-						+ ". Use @ApiClient(baseUrl = \"...\"), the property api.client."
-						+ apiInterface.getSimpleName().toLowerCase(Locale.ROOT)
-						+ ".base.url, the property flexi.api.baseUrl, or a @BaseUrl String parameter.");
-			}
+		    String callerUrl = metadata.extractBaseUrl(args);
+		    String effectiveBaseUrl = callerUrl;
+		    if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
+		        effectiveBaseUrl = metadata.getFullUrl();
+		    }
+		    if (effectiveBaseUrl == null || effectiveBaseUrl.isBlank()) {
+		        throw new FrameworkException("Base url is not defined for " + apiInterface.getName()
+		                + ". Use @ApiClient(baseUrl = \"...\"), the property api.client."
+		                + apiInterface.getSimpleName().toLowerCase(Locale.ROOT)
+		                + ".base.url, the property flexi.api.baseUrl, or a @BaseUrl String parameter.");
+		    }
 
-			URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
-			List<String> segments = new ArrayList<>();
-			String basePath = uriBuilder.getPath();
-			if (basePath != null) {
-				for (String segment : basePath.split("/")) {
-					if (!segment.isEmpty()) {
-						segments.add(segment);
-					}
-				}
-			}
-			segments.addAll(metadata.resolvePathSegments(args));
-			uriBuilder.setPathSegments(segments);
+		    URI uri = exactUri(callerUrl, args);
+		    if (uri == null) {
+		        URIBuilder uriBuilder = new URIBuilder(effectiveBaseUrl);
+		        List<String> segments = new ArrayList<>();
+		        String basePath = uriBuilder.getPath();
+		        if (basePath != null) {
+		            for (String segment : basePath.split("/")) {
+		                if (!segment.isEmpty()) {
+		                    segments.add(segment);
+		                }
+		            }
+		        }
+		        segments.addAll(metadata.resolvePathSegments(args));
+		        uriBuilder.setPathSegments(segments);
 
-			List<NameValuePair> queryParams = metadata.extractQueryParams(args);
-			if (!queryParams.isEmpty()) {
-				uriBuilder.addParameters(queryParams);
-			}
+		        List<NameValuePair> queryParams = metadata.extractQueryParams(args);
+		        if (!queryParams.isEmpty()) {
+		            uriBuilder.addParameters(queryParams);
+		        }
+		        uri = uriBuilder.build();
+		    }
 
-			HttpUriRequest request = createHttpRequest(uriBuilder.build());
-			for (NameValuePair header : metadata.extractHeaders(args)) {
-				request.addHeader(header.getName(), header.getValue());
-			}
-			applyBody(request, args);
-			applyDefaultHeaders(request);
+		    BodyResolver.Resolved resolved = bodyResolver.resolve(args);
+		    HttpUriRequest request = createHttpRequest(uri, resolved != null);
+		    for (NameValuePair header : metadata.extractHeaders(args)) {
+		        request.addHeader(header.getName(), header.getValue());
+		    }
+		    applyBody(request, resolved);
+		    applyDefaultHeaders(request);
 
-			AuthenticationProvider auth = metadata.extractAuth(args);
-			if (auth == null) {
-				auth = staticAuth;
-			}
-			if (auth == null) {
-				auth = config.getAuthenticationProvider();
-			}
-			return new PreparedRequest(request, auth);
+		    AuthenticationProvider auth = metadata.extractAuth(args);
+		    if (auth == null) {
+		        auth = staticAuth;
+		    }
+		    if (auth == null) {
+		        auth = config.getAuthenticationProvider();
+		    }
+		    return new PreparedRequest(request, auth);
+		}
+
+		private URI exactUri(String callerUrl, Object[] args) {
+		    if (callerUrl == null || callerUrl.isBlank()) {
+		        return null;
+		    }
+		    if (!metadata.resolvePathSegments(args).isEmpty() || !metadata.extractQueryParams(args).isEmpty()) {
+		        return null;
+		    }
+		    try {
+		        URI uri = new URI(callerUrl.trim());
+		        return uri.getScheme() != null && uri.getHost() != null ? uri : null;
+		    } catch (URISyntaxException e) {
+		        return null;
+		    }
 		}
 
 		private HttpContext createContext() {
@@ -311,7 +334,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			CloseableHttpResponse response = null;
 			boolean keepOpen = false;
 			try {
-				response = transportProvider.execute(prepared.request(), prepared.auth());
+				response = transportProvider.execute(prepared.request(), prepared.auth(), context);
 				notifyResponse(response, context);
 				
 				Object result = processResponse(response);
@@ -347,62 +370,78 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		 * Content-Type always replaces the header, so multipart requests get a valid
 		 * generated boundary.
 		 */
-		private void applyBody(HttpUriRequest request, Object[] args) throws IOException {
-			if (!(request instanceof HttpEntityEnclosingRequest enclosing)) {
-				return;
-			}
-			BodyResolver.Resolved resolved = bodyResolver.resolve(args);
-			if (resolved == null) {
-				return;
-			}
+		private void applyBody(HttpUriRequest request, BodyResolver.Resolved resolved) throws IOException {
+		    if (resolved == null || !(request instanceof HttpEntityEnclosingRequest enclosing)) {
+		        return;
+		    }
 
-			String contentType = resolved.contentType();
-			if (contentType == null || contentType.isBlank()) {
-				Header header = request.getFirstHeader("Content-Type");
-				contentType = header == null ? null : header.getValue();
-			}
+		    String contentType = resolved.contentType();
+		    if (contentType == null || contentType.isBlank()) {
+		        Header header = request.getFirstHeader("Content-Type");
+		        contentType = header == null ? null : header.getValue();
+		    }
 
-			HttpEntity entity = bodyEncoders.encode(resolved.value(), resolved.type(), contentType);
+		    HttpEntity entity = bodyEncoders.encode(resolved.value(), resolved.type(), contentType);
 
-			request.removeHeaders("Content-Type");
-			if (entity.getContentType() != null) {
-				request.setHeader(entity.getContentType());
-			}
-			enclosing.setEntity(entity);
+		    request.removeHeaders("Content-Type");
+		    if (entity.getContentType() != null) {
+		        request.setHeader(entity.getContentType());
+		    }
+		    enclosing.setEntity(entity);
 		}
 
-		private HttpUriRequest createHttpRequest(URI uri) {
-			return switch (metadata.getHttpMethod()) {
-			case "GET" -> new HttpGet(uri);
-			case "POST" -> new HttpPost(uri);
-			case "PUT" -> new HttpPut(uri);
-			case "DELETE" -> new HttpDelete(uri);
-			case "PATCH" -> new HttpPatch(uri);
-			case "HEAD" -> new HttpHead(uri);
-			case "OPTIONS" -> new HttpOptions(uri);
-			default -> throw new IllegalArgumentException("Unsupported HTTP method: " + metadata.getHttpMethod());
-			};
+		private HttpUriRequest createHttpRequest(URI uri, boolean hasBody) {
+		    String method = metadata.getHttpMethod();
+		    if (hasBody && (method.equals("GET") || method.equals("DELETE") || method.equals("OPTIONS"))) {
+		        return new EntityRequest(method, uri);
+		    }
+		    return switch (method) {
+		    case "GET" -> new HttpGet(uri);
+		    case "POST" -> new HttpPost(uri);
+		    case "PUT" -> new HttpPut(uri);
+		    case "DELETE" -> new HttpDelete(uri);
+		    case "PATCH" -> new HttpPatch(uri);
+		    case "HEAD" -> new HttpHead(uri);
+		    case "OPTIONS" -> new HttpOptions(uri);
+		    default -> throw new IllegalArgumentException("Unsupported HTTP method: " + method);
+		    };
 		}
+
+		
 
 		private Object processResponse(CloseableHttpResponse response) throws IOException {
-			int status = response.getStatusLine().getStatusCode();
-			HttpEntity entity = response.getEntity();
+		    int status = response.getStatusLine().getStatusCode();
+		    HttpEntity entity = response.getEntity();
+		    Class<?> resultClass = metadata.getResultClass();
 
-			if (status >= 400) {
-				String errorBody = entity == null ? null : EntityUtils.toString(entity, charsetOf(entity));
-				throw errorDecoder.decode(status, errorBody);
-			}
+		    if (status >= 400 && !returnsErrorStatus(resultClass)) {
+		        String errorBody = entity == null ? null : EntityUtils.toString(entity, charsetOf(entity));
+		        throw errorDecoder.decode(status, errorBody, headersOf(response));
+		    }
 
-			Class<?> resultClass = metadata.getResultClass();
-			if (resultClass == StreamResponse.class) {
-				return new StreamResponse(response);
-			}
-			if (resultClass == ApiResponse.class) {
-				JavaType inner = metadata.getResultJavaType().containedTypeOrUnknown(0);
-				Object body = readBody(entity, status, inner.getRawClass(), inner);
-				return new ApiResponse<>(status, headersOf(response), body);
-			}
-			return readBody(entity, status, resultClass, metadata.getResultJavaType());
+		    if (resultClass == StreamResponse.class) {
+		        return new StreamResponse(response);
+		    }
+		    if (resultClass == ApiResponse.class) {
+		        JavaType inner = metadata.getResultJavaType().containedTypeOrUnknown(0);
+		        Object body = readBody(entity, status, inner.getRawClass(), inner);
+		        return new ApiResponse<>(status, headersOf(response), body);
+		    }
+		    return readBody(entity, status, resultClass, metadata.getResultJavaType());
+		}
+
+		private boolean returnsErrorStatus(Class<?> resultClass) {
+		    if (config.isThrowOnError()) {
+		        return false;
+		    }
+		    if (resultClass == StreamResponse.class) {
+		        return true;
+		    }
+		    if (resultClass != ApiResponse.class) {
+		        return false;
+		    }
+		    Class<?> inner = metadata.getResultJavaType().containedTypeOrUnknown(0).getRawClass();
+		    return inner == String.class || inner == byte[].class || inner == InputStream.class;
 		}
 
 		private Object readBody(HttpEntity entity, int status, Class<?> resultClass, JavaType javaType)
@@ -436,6 +475,20 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 	}
 
+	private static final class EntityRequest extends HttpEntityEnclosingRequestBase {
+	    private final String method;
+
+	    EntityRequest(String method, URI uri) {
+	        this.method = method;
+	        setURI(uri);
+	    }
+
+	    @Override
+	    public String getMethod() {
+	        return method;
+	    }
+	}
+	
 	private static boolean isBlank(byte[] bytes) {
 		for (byte value : bytes) {
 			if (value != ' ' && value != '\n' && value != '\r' && value != '\t') {
