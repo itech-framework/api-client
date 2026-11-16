@@ -187,7 +187,8 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    HttpEntity entity = response.getEntity();
 		    long limit = config.getMaxBodyBytes();
 		    if (limit <= 0) {
-		        return new Captured(EntityUtils.toByteArray(entity), false);
+		    	byte[] all = EntityUtils.toByteArray(entity);
+		    	return new Captured(all == null ? new byte[0] : all, false);
 		    }
 		    if (!truncate && entity.getContentLength() > limit) {
 		        throw tooLarge(response, limit);
