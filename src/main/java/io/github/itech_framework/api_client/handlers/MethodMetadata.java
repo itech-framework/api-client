@@ -40,6 +40,7 @@ import io.github.itech_framework.api_client.annotations.parameters.Part;
 import io.github.itech_framework.api_client.annotations.parameters.Path;
 import io.github.itech_framework.api_client.annotations.parameters.Query;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
+import io.github.itech_framework.api_client.utils.CancelToken;
 import io.github.itech_framework.api_client.utils.JsonUtils;
 
 public class MethodMetadata {
@@ -348,6 +349,15 @@ public class MethodMetadata {
 		}
 		return null;
 	}
+	
+	public CancelToken extractCancelToken(Object[] args) {
+		for (ParameterMetadata param : parameters) {
+			if (param.type == ParamType.CANCEL && args[param.index] instanceof CancelToken token) {
+				return token;
+			}
+		}
+		return null;
+	}
 
 	public String getFullUrl() {
 		return baseUrl;
@@ -374,7 +384,7 @@ public class MethodMetadata {
 	}
 
 	private enum ParamType {
-		AUTH, PATH, QUERY, BODY, HEADERS_MAP, BASE_URL, UNKNOWN
+		AUTH, PATH, QUERY, BODY, HEADERS_MAP, BASE_URL, CANCEL, UNKNOWN
 	}
 
 	private static final class ParameterMetadata {
@@ -404,6 +414,9 @@ public class MethodMetadata {
 				this.name = null;
 			} else if (parameter.isAnnotationPresent(Part.class) || parameter.isAnnotationPresent(Field.class)) {
 				this.type = ParamType.UNKNOWN;
+				this.name = null;
+			} else if (parameter.getType() == CancelToken.class) {
+				this.type = ParamType.CANCEL;
 				this.name = null;
 			} else {
 				throw new IllegalArgumentException("Parameter " + index + " of "

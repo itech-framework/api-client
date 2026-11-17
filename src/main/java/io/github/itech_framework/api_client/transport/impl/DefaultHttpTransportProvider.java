@@ -167,6 +167,11 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 		int attempt = 0;
 
 		while (true) {
+			
+			if (request.isAborted()) {
+				throw new RequestCancelledException();
+			}
+			
 			attempt++;
 			context.setAttribute(Interceptor.ATTEMPT, attempt);
 			notifyBeforeSend(request, context);
@@ -179,6 +184,11 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 			} catch (RequestCancelledException e) {
 			    throw e;
 			} catch (IOException e) {
+				
+			    if (request.isAborted()) {
+			        throw new RequestCancelledException();
+			    }
+				
 			    if (attempt >= maxAttempts) {
 			        throw e;
 			    }

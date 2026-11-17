@@ -60,9 +60,11 @@ import io.github.itech_framework.api_client.auth.AuthProviderFactory;
 import io.github.itech_framework.api_client.auth.AuthenticationProvider;
 import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.exceptions.ApiException;
+import io.github.itech_framework.api_client.exceptions.RequestCancelledException;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
+import io.github.itech_framework.api_client.utils.CancelToken;
 import io.github.itech_framework.api_client.utils.JsonUtils;
 import io.github.itech_framework.api_client.utils.body.BodyEncoders;
 import io.github.itech_framework.api_client.utils.response.ApiExchange;
@@ -85,8 +87,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private final BodyEncoders bodyEncoders = BodyEncoders.defaults();
 	private final Map<Method, MethodHandler> methodHandlers = new ConcurrentHashMap<>();
 
-	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth) {
-	}
+	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth, CancelToken cancelToken) {	}
 
 	public DynamicApiClientInvocationHandler(Class<?> apiInterface, ApiClientConfig config) {
 		this.apiInterface = apiInterface;
@@ -329,7 +330,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    if (auth == null) {
 		        auth = config.getAuthenticationProvider();
 		    }
-		    return new PreparedRequest(request, auth);
+		    return new PreparedRequest(request, auth, metadata.extractCancelToken(args));
 		}
 
 		private URI exactUri(String callerUrl, Object[] args) {
@@ -379,6 +380,10 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		}
 		
 		private Object executeRequest(PreparedRequest prepared, HttpContext context) throws Exception {
+			CancelToken token = prepared.cancelToken();
+			if (token != null) {
+				token.attach(prepared.request());
+			}
 			for (Interceptor interceptor : config.getInterceptors()) {
 				interceptor.onRequest(prepared.request(), context);
 			}
@@ -397,8 +402,14 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 				keepOpen = result instanceof StreamResponse;
 				return result;
 			} catch (Exception e) {
-				notifyError(e, context);
-				throw e;
+				Exception failure = e;
+				if (token != null && token.isCancelled() && !(e instanceof RequestCancelledException)) {
+					RequestCancelledException cancelled = new RequestCancelledException();
+					cancelled.initCause(e);
+					failure = cancelled;
+				}
+				notifyError(failure, context);
+				throw failure;
 			} finally {
 				if (response != null && !keepOpen) {
 					try {
