@@ -25,6 +25,7 @@ import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
 import org.apache.http.ProtocolException;
+import org.apache.http.client.CookieStore;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpUriRequest;
@@ -35,6 +36,7 @@ import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
+import org.apache.http.impl.client.BasicCookieStore;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.DefaultRedirectStrategy;
 import org.apache.http.impl.client.HttpClientBuilder;
@@ -66,11 +68,17 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	private final ApiClientConfig config;
 	private final PoolingHttpClientConnectionManager connectionManager;
 	private final CloseableHttpClient defaultHttpClient;
+	
+	private final CookieStore cookieStore;
+	
 	private final ConcurrentHashMap<AuthenticationProvider, CloseableHttpClient> clientCache = new ConcurrentHashMap<>();
 
 	public DefaultHttpTransportProvider(ApiClientConfig config) {
 		this.config = config;
 		this.connectionManager = createConnectionManager(config);
+		this.cookieStore = config.isCookiesEnabled()
+		        ? (config.getCookieStore() != null ? config.getCookieStore() : new BasicCookieStore())
+		        : null;
 		this.defaultHttpClient = buildHttpClient(null);
 	}
 
@@ -116,6 +124,12 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 		builder.setRoutePlanner(new SystemDefaultRoutePlanner(ProxySelector.getDefault()));
 
+		if (cookieStore == null) {
+		    builder.disableCookieManagement();
+		} else {
+		    builder.setDefaultCookieStore(cookieStore);
+		}
+		
 		if (authProvider == null) {
 		    builder.evictExpiredConnections().evictIdleConnections(30, TimeUnit.SECONDS);
 		}

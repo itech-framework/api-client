@@ -658,6 +658,29 @@ Cancelling a returned `CompletableFuture` does not stop a request that is alread
 | `api.client.<name>.retry.backoff` | `200` | Base delay in milliseconds. It doubles on every attempt, plus a random jitter. |
 | `api.client.<name>.retry.max.backoff` | `5000` | Upper limit of the delay in milliseconds. It also limits `Retry-After`. |
 
+### Cookies
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api.client.<n>.cookies.enabled` | `false` | Keep the cookies that responses set and send them on later calls through the same client. When `false`, `Set-Cookie` is ignored (you can still read it in `ApiResponse.headers()`), and a `Cookie` header that you set yourself is still sent. |
+
+Cookies are off so that one call cannot change what the next call sends. When you turn them on, all calls through the same client share one cookie store. To own that store, pass your own `org.apache.http.client.CookieStore`:
+
+```java
+CookieStore store = new BasicCookieStore();
+ApiClientConfig config = ApiClientConfig.builder()
+        .baseUrl("https://example.com")
+        .cookieStore(store)
+        .build();
+```
+
+```java
+store.getCookies();
+store.clear();
+```
+
+`cookieStore(...)` turns cookies on. The same store is used for every connection of the client, including the one for digest authentication.
+
 ## Retries 🔁
 
 - Only idempotent methods are retried: `GET`, `HEAD`, `OPTIONS`, `PUT` and `DELETE`. `POST` and `PATCH` are sent once.
@@ -850,6 +873,8 @@ Call `handler.close()` when you are done, to stop the async pool and the connect
 | `throwOnError(boolean)` | `true` | Return error statuses instead of throwing, for `StreamResponse`, and for `ApiResponse` or `ApiExchange` of `String`, `byte[]` or `InputStream`. |
 | `normalizeUri(boolean)` | `true` | Let the HTTP library normalize the request URI. |
 | `maxBodyBytes(long)` | `0` | Largest response body read into memory. `0` means no limit. |
+| `cookiesEnabled(boolean)` | `false` | Keep cookies between calls through the same client. |
+| `cookieStore(CookieStore)` | *(none)* | Use your own cookie store. Turns cookies on. |
 
 Default headers never override a `Content-Type` that the request body has already set.
 
@@ -861,6 +886,7 @@ Default headers never override a `Content-Type` that the request body has alread
 - Digest authentication without a `realm` offers its credentials to any host that sends a Digest challenge. Set the `realm` in `@DigestAuth`.
 - The startup log prints the base URL. Do not put `user:password@` in it.
 - Do not build upload file paths from untrusted input. `@Part` and `@Body` read exactly the `File` or `Path` you pass in.
+- **Cookies:** cookies are off by default. When you turn them on, every call through the same client shares one cookie store, so a session cookie set for one user is sent on the calls of another. Create one client for each user or session.
 
 ## Using with the JavaFX Module
 The API client works with the [java-fx](https://github.com/itech-framework/java-fx) module through the shared `@Use` injection. Inject your API interface into an `@FxController` or `@FxComponent`, call it asynchronously, and update the UI with `Platform.runLater`. Use the FX toast and dialog components to report `ApiException` errors to the user.
@@ -896,6 +922,8 @@ public class UploadController implements Routable {
 - New settings: `throw.on.error` (default `true`), `normalize.uri` (default `true`) and `max.body.bytes` (default `0`, no limit). With the defaults, behaviour does not change.
 - New: `Interceptor.onBeforeSend` and `Interceptor.ATTEMPT`, a three-argument `HttpTransportProvider.execute` with a default, `StreamResponse.saveTo(path)`, the error code `BODY_TOO_LARGE` and `HeaderRedactor`.
 - New: `ApiExchange<T>`, `SentRequest`, `Timing`, `RedirectHop`, `Interceptor.SENT_REQUEST` and `Interceptor.REDIRECTS`.
+- Cookies are no longer kept between calls. Earlier versions kept the cookies a response set and sent them on later calls through the same client, which was the HTTP library's default. Set `cookies.enabled=true` or `cookiesEnabled(true)` to get the old behavior back.
+- New: `cookies.enabled`, `cookiesEnabled(boolean)` and `cookieStore(CookieStore)`.
 
 ## Upgrading to 1.1.0 ⬆️
 

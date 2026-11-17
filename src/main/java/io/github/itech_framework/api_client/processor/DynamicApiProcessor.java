@@ -82,6 +82,7 @@ public class DynamicApiProcessor {
 				.retryMaxBackoffMillis(getLongProperty(clazz, "retry.max.backoff", "retry.maxBackoff", 5000L))
 				.throwOnError(getBooleanProperty(clazz, "throw.on.error", "throwOnError", true))
 				.normalizeUri(getBooleanProperty(clazz, "normalize.uri", "normalizeUri", true))
+				.cookiesEnabled(getBooleanProperty(clazz, "cookies.enabled", "cookiesEnabled", false))
 				.maxBodyBytes(getLongProperty(clazz, "max.body.bytes", "maxBodyBytes", 0L));
 
 		for (Class<? extends Interceptor> type : apiClient.interceptors()) {

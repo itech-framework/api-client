@@ -1,13 +1,15 @@
 package io.github.itech_framework.api_client.config;
 
-import io.github.itech_framework.api_client.auth.AuthenticationProvider;
-import io.github.itech_framework.api_client.interceptor.Interceptor;
-import io.github.itech_framework.api_client.transport.HttpTransportProvider;
-
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.apache.http.client.CookieStore;
+
+import io.github.itech_framework.api_client.auth.AuthenticationProvider;
+import io.github.itech_framework.api_client.interceptor.Interceptor;
+import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 
 public class ApiClientConfig {
     private String baseUrl;
@@ -34,6 +36,10 @@ public class ApiClientConfig {
     private boolean normalizeUri = true;
 
     private long maxBodyBytes = 0;
+    
+    private boolean cookiesEnabled = false;
+    
+    private CookieStore cookieStore;
     
     public static class Builder {
         private final ApiClientConfig config = new ApiClientConfig();
@@ -147,6 +153,19 @@ public class ApiClientConfig {
             config.maxBodyBytes = Math.max(0, maxBodyBytes);
             return this;
         }
+        
+        public Builder cookiesEnabled(boolean cookiesEnabled) {
+            config.cookiesEnabled = cookiesEnabled;
+            return this;
+        }
+        
+        public Builder cookieStore(CookieStore cookieStore) {
+            config.cookieStore = cookieStore;
+            if (cookieStore != null) {
+                config.cookiesEnabled = true;
+            }
+            return this;
+        }
 
         public ApiClientConfig build() {
             return config;
@@ -174,6 +193,8 @@ public class ApiClientConfig {
     
     public boolean isThrowOnError() { return throwOnError; }
     public boolean isNormalizeUri() { return normalizeUri; }
+    public boolean isCookiesEnabled() { return cookiesEnabled; }
+    public CookieStore getCookieStore() { return cookieStore; }
     public long getMaxBodyBytes() { return maxBodyBytes; }
 
     public static Builder builder() {
