@@ -146,9 +146,11 @@ Every interface method needs exactly one of these. `default` and `static` method
 | `@Headers` | parameter | Extra headers for this call. Pass a `Map<String, ?>` (a collection or array value sends one header per item) or a `List` of `NameValuePair` or `Map.Entry` to repeat a header name. `null` values are skipped. |
 | `@BaseUrl` | parameter | A `String` that replaces the base URL for this call. |
 | `@Auth` | parameter | An `AuthenticationProvider` used for this call only. |
+| `CancelToken` | parameter | No annotation needed, the type is enough. A token that cancels this call. See [Cancelling and tuning one call](#cancelling-and-tuning-one-call). |
+| `RequestOptions` | parameter | No annotation needed, the type is enough. Timeouts, redirect and proxy settings for this call only. |
 | `@Header(name, value)` | method | A fixed header. Repeatable. |
 
-**Every parameter of an interface method needs one of the parameter annotations above.** A parameter without one fails as soon as the client is created, with a message that names the method and the position of the parameter. Earlier versions ignored such parameters silently.
+**Every parameter of an interface method needs one of the parameter annotations above, except `CancelToken` and `RequestOptions` parameters, which are recognised by their type.** A parameter without one fails as soon as the client is created, with a message that names the method and the position of the parameter. Earlier versions ignored such parameters silently.
 
 Every `{placeholder}` in a path must have a matching `@Path` parameter. A missing one also fails as soon as the client is created.
 
@@ -483,6 +485,65 @@ The base URL is resolved in this order, and the first non-empty value wins:
 
 If none of them is set, the call fails with a `FrameworkException` that lists these options. Any path in the base URL is kept and the method path is appended to it. When a call passes a `@BaseUrl` and the method has no path, no `@Path` and no `@Query` parameters (for example `@GET("")`), the URL is sent exactly as you typed it: repeated query keys, a key without a value, `+`, `%20` and `%2F` all stay as written. This suits tools that send user-typed URLs. When the method has a path, the path and query are rebuilt from their parts. By default (`normalize.uri=true`) the HTTP library also collapses duplicate slashes, so `/a//b` becomes `/a/b`. Set `normalize.uri=false` to send them unchanged. Dot segments such as `/a/../b` are sent as written in both modes.
 
+## Cancelling and tuning one call
+
+### Cancelling a call
+
+Declare a `CancelToken` parameter and keep the token you pass in:
+
+```java
+@GET("/export")
+String export(CancelToken token);
+```
+
+```java
+CancelToken token = new CancelToken();
+CompletableFuture<String> call = CompletableFuture.supplyAsync(() -> api.export(token));
+cancelButton.setOnAction(event -> token.cancel());
+```
+
+- `cancel()` aborts the request that is in flight, including while the client waits for the server. The call fails with a `RequestCancelledException` as the cause, in the same way as an upload cancellation (see [Upload progress and cancellation](#upload-progress-and-cancellation)).
+- A token that is already cancelled when the call starts stops it before anything is sent. A cancelled token also stops further retries.
+- A token that is never cancelled does nothing. Once cancelled, a token stays cancelled, so create a new token for each call you may want to cancel.
+- Cancelling the `CompletableFuture` of an async call does not abort the HTTP call. Use a token.
+
+### Options for one call
+
+Declare a `RequestOptions` parameter to change the timeouts, the redirect handling or the proxy for that call only:
+
+```java
+@GET("/export")
+String export(RequestOptions options);
+```
+
+```java
+RequestOptions options = RequestOptions.builder()
+        .connectTimeoutMillis(2000)
+        .socketTimeoutMillis(60000)
+        .followRedirects(false)
+        .proxy("proxy.corp", 8080)
+        .build();
+
+api.export(options);
+```
+
+| Builder method | Description |
+|----------------|-------------|
+| `connectTimeoutMillis(int)` | Time allowed to open the connection. |
+| `socketTimeoutMillis(int)` | Time allowed to wait for data. |
+| `connectionRequestTimeoutMillis(int)` | Time allowed to wait for a free pooled connection. The client default is its connect timeout. |
+| `timeoutMillis(int)` | Sets the connect and the socket timeout together. |
+| `followRedirects(boolean)` | Follow redirects, or return the `3xx` response itself. |
+| `maxRedirects(int)` | The most redirects to follow. When the chain is longer, the call fails. |
+| `proxy(host, port)` or `proxy(host, port, scheme)` | Send this call through the proxy. The scheme defaults to `http`. |
+
+- Anything you do not set uses the client setting. A timeout of `0` means no timeout, and a negative value is rejected with an `IllegalArgumentException`.
+- The options apply to that call only. Later calls on the same client are not affected.
+- `proxy` takes precedence over the JVM proxy settings for that call. It does not carry credentials.
+- TLS verification cannot be changed per call. It stays a client setting (`ssl.verification`).
+- An interceptor can read the options from the context with `Interceptor.OPTIONS`.
+- Only the default transport applies the options. A custom `HttpTransportProvider` has to read `Interceptor.OPTIONS` itself.
+
 ## Authentication 🔐
 
 Add `@Authenticated(AuthType.X)` to the interface or to a single method, together with the matching annotation. A method-level setting overrides the interface-level one.
@@ -623,7 +684,7 @@ A value that cannot be read (text where a number is expected, or anything other 
 | `api.client.<name>.ssl.verification` | `true` | Verify TLS certificates and host names. TLS 1.2 and 1.3 are used. When set to `false`, a warning is logged at startup. |
 
 ### Proxy
-The client uses the JVM default `ProxySelector`, so the standard system properties work, for example `-Dhttps.proxyHost=proxy.corp -Dhttps.proxyPort=8080` and `-Dhttp.nonProxyHosts=...`. This is what a desktop application on a corporate network usually needs. The client does not configure proxy credentials, and the OAuth2 token requests do not use the proxy (see [OAuth2 details](#oauth2-details)).
+The client uses the JVM default `ProxySelector`, so the standard system properties work, for example `-Dhttps.proxyHost=proxy.corp -Dhttps.proxyPort=8080` and `-Dhttp.nonProxyHosts=...`. This is what a desktop application on a corporate network usually needs. The client does not configure proxy credentials, and the OAuth2 token requests do not use the proxy (see [OAuth2 details](#oauth2-details)). To send one call through a different proxy, pass `proxy(...)` in a `RequestOptions` parameter (see [Cancelling and tuning one call](#cancelling-and-tuning-one-call)).
 
 ### Async and Logging
 
@@ -924,6 +985,7 @@ public class UploadController implements Routable {
 - New: `ApiExchange<T>`, `SentRequest`, `Timing`, `RedirectHop`, `Interceptor.SENT_REQUEST` and `Interceptor.REDIRECTS`.
 - Cookies are no longer kept between calls. Earlier versions kept the cookies a response set and sent them on later calls through the same client, which was the HTTP library's default. Set `cookies.enabled=true` or `cookiesEnabled(true)` to get the old behavior back.
 - New: `cookies.enabled`, `cookiesEnabled(boolean)` and `cookieStore(CookieStore)`.
+- New: `CancelToken` and `RequestOptions` method parameters, and `Interceptor.OPTIONS`. They need no annotation.
 
 ## Upgrading to 1.1.0 ⬆️
 

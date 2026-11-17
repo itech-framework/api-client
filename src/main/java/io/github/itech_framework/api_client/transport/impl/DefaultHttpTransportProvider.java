@@ -28,6 +28,7 @@ import org.apache.http.ProtocolException;
 import org.apache.http.client.CookieStore;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpRequestBase;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.config.Registry;
@@ -57,6 +58,7 @@ import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.exceptions.RequestCancelledException;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
+import io.github.itech_framework.api_client.utils.RequestOptions;
 import io.github.itech_framework.api_client.utils.response.RedirectHop;
 import io.github.itech_framework.api_client.utils.response.SentRequest;
 
@@ -110,10 +112,7 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	}
 
 	private CloseableHttpClient buildHttpClient(AuthenticationProvider authProvider) {
-		RequestConfig requestConfig = RequestConfig.custom().setConnectTimeout(config.getConnectTimeout())
-				.setSocketTimeout(config.getSocketTimeout()).setConnectionRequestTimeout(config.getConnectTimeout())
-				.setRedirectsEnabled(config.isFollowRedirects())
-				.setNormalizeUri(config.isNormalizeUri()).build();
+		RequestConfig requestConfig = baseRequestConfig();
 
 		HttpClientBuilder builder = HttpClients.custom()
 		        .setConnectionManager(connectionManager)
@@ -140,6 +139,48 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 
 		return builder.build();
 	}
+	
+	private RequestConfig baseRequestConfig() {
+		return RequestConfig.custom().setConnectTimeout(config.getConnectTimeout())
+				.setSocketTimeout(config.getSocketTimeout()).setConnectionRequestTimeout(config.getConnectTimeout())
+				.setRedirectsEnabled(config.isFollowRedirects())
+				.setNormalizeUri(config.isNormalizeUri()).build();
+	}
+
+	private RequestConfig requestConfigFor(RequestOptions options) {
+		RequestConfig.Builder builder = RequestConfig.copy(baseRequestConfig());
+		if (options.getConnectTimeoutMillis() != null) {
+			builder.setConnectTimeout(options.getConnectTimeoutMillis());
+		}
+		if (options.getSocketTimeoutMillis() != null) {
+			builder.setSocketTimeout(options.getSocketTimeoutMillis());
+		}
+		if (options.getConnectionRequestTimeoutMillis() != null) {
+			builder.setConnectionRequestTimeout(options.getConnectionRequestTimeoutMillis());
+		}
+		if (options.getFollowRedirects() != null) {
+			builder.setRedirectsEnabled(options.getFollowRedirects());
+		}
+		if (options.getMaxRedirects() != null) {
+			builder.setMaxRedirects(options.getMaxRedirects());
+		}
+		if (options.getProxy() != null) {
+			builder.setProxy(options.getProxy());
+		}
+		return builder.build();
+	}
+
+	private void applyOptions(HttpUriRequest request, HttpContext context) {
+		if (!(context.getAttribute(Interceptor.OPTIONS) instanceof RequestOptions options)) {
+			return;
+		}
+		if (request instanceof HttpRequestBase base) {
+			base.setConfig(requestConfigFor(options));
+		} else {
+			logger.warn("Request options ignored: {} cannot carry a request configuration",
+					request.getClass().getName());
+		}
+	}
 
 	@Override
 	public CloseableHttpClient createHttpClient() {
@@ -162,8 +203,10 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 		int maxAttempts = IDEMPOTENT_METHODS.contains(request.getMethod()) && repeatable ? config.getMaxRetries() + 1 : 1;
 		
 		prepareAuth(request, auth);
+		applyOptions(request, context);
 
 		boolean reauthenticated = false;
+		
 		int attempt = 0;
 
 		while (true) {

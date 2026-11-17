@@ -66,6 +66,7 @@ import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
 import io.github.itech_framework.api_client.utils.CancelToken;
 import io.github.itech_framework.api_client.utils.JsonUtils;
+import io.github.itech_framework.api_client.utils.RequestOptions;
 import io.github.itech_framework.api_client.utils.body.BodyEncoders;
 import io.github.itech_framework.api_client.utils.response.ApiExchange;
 import io.github.itech_framework.api_client.utils.response.ApiResponse;
@@ -87,7 +88,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 	private final BodyEncoders bodyEncoders = BodyEncoders.defaults();
 	private final Map<Method, MethodHandler> methodHandlers = new ConcurrentHashMap<>();
 
-	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth, CancelToken cancelToken) {	}
+	private record PreparedRequest(HttpUriRequest request, AuthenticationProvider auth, CancelToken cancelToken, RequestOptions options) {	}
 
 	public DynamicApiClientInvocationHandler(Class<?> apiInterface, ApiClientConfig config) {
 		this.apiInterface = apiInterface;
@@ -330,7 +331,8 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    if (auth == null) {
 		        auth = config.getAuthenticationProvider();
 		    }
-		    return new PreparedRequest(request, auth, metadata.extractCancelToken(args));
+		    return new PreparedRequest(request, auth, metadata.extractCancelToken(args),
+		            metadata.extractRequestOptions(args));
 		}
 
 		private URI exactUri(String callerUrl, Object[] args) {
@@ -383,6 +385,9 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			CancelToken token = prepared.cancelToken();
 			if (token != null) {
 				token.attach(prepared.request());
+			}
+			if (prepared.options() != null) {
+				context.setAttribute(Interceptor.OPTIONS, prepared.options());
 			}
 			for (Interceptor interceptor : config.getInterceptors()) {
 				interceptor.onRequest(prepared.request(), context);
