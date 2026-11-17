@@ -15,6 +15,7 @@ implementation for you.
 - JSON serialization and deserialization with Jackson (generics and `java.time` supported)
 - Synchronous and asynchronous (`CompletableFuture`) calls, with a bounded async queue
 - `ApiResponse<T>` for status and headers, and `StreamResponse` for large downloads
+- `ApiExchange<T>` for the request as sent, timing, redirects and the retry count
 - Built-in authentication: Basic, Bearer, API key, OAuth2 (client credentials with token caching and refresh) and Digest
 - Custom authentication providers per call
 - Automatic retries with exponential backoff, jitter and `Retry-After` support
@@ -177,6 +178,7 @@ public interface ReportApi {
 | `byte[]` | The raw response bytes. |
 | `InputStream` | The response bytes as an in-memory stream. |
 | `ApiResponse<T>` | The status, the headers and the body. `T` follows the rules in this table. See [ApiResponse](#apiresponse). |
+| `ApiExchange<T>` | An `ApiResponse<T>` plus the request as sent, the timing, the redirect hops and the attempt count. `T` follows the same rules as for `ApiResponse<T>`. See [ApiExchange](#apiexchange). |
 | `StreamResponse` | The response as a stream that is not read into memory. See [Large downloads](#large-downloads-with-streamresponse). |
 | Any other type (including generics such as `List<User>`) | Parsed from JSON with Jackson. |
 | `CompletableFuture<T>` | Runs the call asynchronously. `T` follows the rules above. |
@@ -211,6 +213,32 @@ boolean ok = response.isSuccessful(); // status 200-299
 | `isSuccessful()` | `true` for status 200 to 299. |
 
 By default, error statuses (400 and higher) throw an `ApiException`. With `throw.on.error=false`, a method that returns `ApiResponse<String>`, `ApiResponse<byte[]>` or `ApiResponse<InputStream>` returns the error status, headers and body instead. Other result types still throw, because an error body usually does not fit the type. See [Responses and URLs](#responses-and-urls). Use `ApiResponse<Void>` when you only need the status and headers. It also works inside a `CompletableFuture`.
+
+#### ApiExchange
+
+Use `ApiExchange<T>` when you need to see what happened on the wire, for example in a request-testing tool. It holds an `ApiResponse<T>` plus:
+
+- `request()`: the request as it was sent, with the headers the HTTP client added (`Host`, `User-Agent`, `Content-Length`, `Accept-Encoding`) and the authentication headers. It describes the final request, so after a redirect it is the request to the last URL.
+- `timing()`: `headersMillis` is the time until the response headers arrived, including retries and redirects. `totalMillis` is the time until the body was fully read.
+- `redirects()`: one `RedirectHop(status, from, location)` for every redirect that was followed, in order. The list is empty when there was none.
+- `attempts()`: how many times the request was tried, counting retries. The one extra request after an automatic OAuth2 token refresh is not counted.
+
+```java
+@GET("")
+ApiExchange<String> get(@BaseUrl String url);
+```
+
+```java
+ApiExchange<String> exchange = api.get("https://example.com/a");
+exchange.status();
+exchange.request().header("User-Agent");
+exchange.timing().totalMillis();
+exchange.redirects();
+```
+
+The error rules are the same as for `ApiResponse<T>`, and it also works inside a `CompletableFuture`. Only the final attempt is described: if an earlier attempt was retried, its request and redirects are not included.
+
+`request().headers()` holds the real values, including `Authorization` and cookies. `toString()` hides them, but if you log or show the headers, pass them through `HeaderRedactor.defaults().redact(...)`.
 
 #### Large downloads with StreamResponse
 
@@ -618,7 +646,7 @@ Cancelling a returned `CompletableFuture` does not stop a request that is alread
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `api.client.<n>.throw.on.error` | `true` | When `false`, a status of 400 or higher is returned instead of thrown, for methods that return `StreamResponse`, `ApiResponse<String>`, `ApiResponse<byte[]>` or `ApiResponse<InputStream>`. All other return types, including `ApiResponse<Void>` and DTOs, still throw. |
+| `api.client.<n>.throw.on.error` | `true` | When `false`, a status of 400 or higher is returned instead of thrown, for methods that return `StreamResponse`, or `ApiResponse` or `ApiExchange` of `String`, `byte[]` or `InputStream`. All other return types, including `ApiResponse<Void>` and DTOs, still throw. |
 | `api.client.<n>.normalize.uri` | `true` | Let the HTTP library normalize the request URI. It collapses duplicate slashes. Set `false` to send the path as it was built. |
 | `api.client.<n>.max.body.bytes` | `0` | The largest response body the client reads into memory, in bytes. `0` means no limit. A successful body over the limit fails with the error code `BODY_TOO_LARGE`. An error body is cut at the limit. A `StreamResponse` is never limited. |
 
@@ -758,6 +786,8 @@ How interceptors run:
 - Reading the body of the response in `onResponse` consumes it. Wrap the entity in a `BufferedHttpEntity` first if the client still has to read it. This also applies to `StreamResponse`.
 - To treat methods differently, read the method from the context and check your own marker annotation. No extra API is needed.
 
+After a response arrives, `onResponse` and `onError` can read `Interceptor.SENT_REQUEST` (a `SentRequest`) and `Interceptor.REDIRECTS` (a `List<RedirectHop>`) from the context. Both describe the final attempt, and `SENT_REQUEST` is `null` when no response arrived.
+
 ### Hiding secrets in logs
 
 Because `onBeforeSend` sees the real credentials, do not print its headers as they are. `HeaderRedactor` replaces the values of sensitive headers with `***` and leaves the others alone:
@@ -817,7 +847,7 @@ Call `handler.close()` when you are done, to stop the async pool and the connect
 | `asyncQueueFullPolicy(QueueFullPolicy)` | `REJECT` | `REJECT` or `CALLER_RUNS`. |
 | `enableLogging(boolean)` / `loggingLevel(String)` | `true` / `INFO` | Logging settings. |
 | `maxRetries(int)` / `retryBackoffMillis(long)` / `retryMaxBackoffMillis(long)` | `2` / `200` / `5000` | Retry settings. |
-| `throwOnError(boolean)` | `true` | Return error statuses instead of throwing, for `StreamResponse` and `ApiResponse<String\|byte[]\|InputStream>`. |
+| `throwOnError(boolean)` | `true` | Return error statuses instead of throwing, for `StreamResponse`, and for `ApiResponse` or `ApiExchange` of `String`, `byte[]` or `InputStream`. |
 | `normalizeUri(boolean)` | `true` | Let the HTTP library normalize the request URI. |
 | `maxBodyBytes(long)` | `0` | Largest response body read into memory. `0` means no limit. |
 
@@ -865,6 +895,7 @@ public class UploadController implements Routable {
 - `ApiException` carries the response headers (`getHeaders()`, `header(name)`) and the raw body (`getResponseBytes()`, `isBodyTruncated()`).
 - New settings: `throw.on.error` (default `true`), `normalize.uri` (default `true`) and `max.body.bytes` (default `0`, no limit). With the defaults, behaviour does not change.
 - New: `Interceptor.onBeforeSend` and `Interceptor.ATTEMPT`, a three-argument `HttpTransportProvider.execute` with a default, `StreamResponse.saveTo(path)`, the error code `BODY_TOO_LARGE` and `HeaderRedactor`.
+- New: `ApiExchange<T>`, `SentRequest`, `Timing`, `RedirectHop`, `Interceptor.SENT_REQUEST` and `Interceptor.REDIRECTS`.
 
 ## Upgrading to 1.1.0 ⬆️
 

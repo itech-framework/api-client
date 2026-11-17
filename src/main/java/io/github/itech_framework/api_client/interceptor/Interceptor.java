@@ -11,6 +11,10 @@ public interface Interceptor {
     
     String ATTEMPT = "attempt";
 
+    String SENT_REQUEST = "sentRequest";
+    
+    String REDIRECTS = "redirects";
+    
     default void onBeforeSend(HttpRequest request, HttpContext context) {
     }
 

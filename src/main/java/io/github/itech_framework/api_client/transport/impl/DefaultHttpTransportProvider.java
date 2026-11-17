@@ -8,7 +8,9 @@ import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +55,8 @@ import io.github.itech_framework.api_client.config.ApiClientConfig;
 import io.github.itech_framework.api_client.exceptions.RequestCancelledException;
 import io.github.itech_framework.api_client.interceptor.Interceptor;
 import io.github.itech_framework.api_client.transport.HttpTransportProvider;
+import io.github.itech_framework.api_client.utils.response.RedirectHop;
+import io.github.itech_framework.api_client.utils.response.SentRequest;
 
 public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	private static final Logger logger = LogManager.getLogger(DefaultHttpTransportProvider.class);
@@ -153,8 +157,11 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 			context.setAttribute(Interceptor.ATTEMPT, attempt);
 			notifyBeforeSend(request, context);
 			CloseableHttpResponse response;
+			HttpClientContext attemptContext = HttpClientContext.create();
+			context.removeAttribute(Interceptor.SENT_REQUEST);
+			context.removeAttribute(Interceptor.REDIRECTS);
 			try {
-			    response = client.execute(request);
+			    response = client.execute(request, attemptContext);
 			} catch (RequestCancelledException e) {
 			    throw e;
 			} catch (IOException e) {
@@ -167,6 +174,9 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 			}
 
 			int status = response.getStatusLine().getStatusCode();
+			
+			context.setAttribute(Interceptor.SENT_REQUEST, snapshot(attemptContext));
+			context.setAttribute(Interceptor.REDIRECTS, attemptContext.getAttribute(Interceptor.REDIRECTS));
 
 			if (status == 401 && auth != null && auth.retryOnUnauthorized() && !reauthenticated && repeatable) {
 				reauthenticated = true;
@@ -197,6 +207,26 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	            logger.warn("Interceptor {} failed in onBeforeSend", interceptor.getClass().getName(), failure);
 	        }
 	    }
+	}
+	
+	private SentRequest snapshot(HttpClientContext attemptContext) {
+	    HttpRequest sent = attemptContext.getRequest();
+	    if (sent == null) {
+	        return null;
+	    }
+	    Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+	    for (Header header : sent.getAllHeaders()) {
+	        headers.computeIfAbsent(header.getName(), name -> new ArrayList<>()).add(header.getValue());
+	    }
+	    return new SentRequest(sent.getRequestLine().getMethod(), absoluteUri(sent, attemptContext), headers);
+	}
+
+	private static String absoluteUri(HttpRequest request, HttpClientContext context) {
+	    String target = request.getRequestLine().getUri();
+	    HttpHost host = context.getTargetHost();
+	    return host == null || target.startsWith("http://") || target.startsWith("https://")
+	            ? target
+	            : host.toURI() + target;
 	}
 
 	private CloseableHttpClient clientFor(AuthenticationProvider auth) {
@@ -268,6 +298,8 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	        HttpUriRequest redirect = super.getRedirect(request, response, context);
 	        HttpHost origin = HttpClientContext.adapt(context).getTargetHost();
 	        URI target = redirect.getURI();
+	        recordHop(context, response, absoluteUri(request, HttpClientContext.adapt(context)), target);
+	        
 	        boolean sameOrigin = origin != null && target.getHost() != null
 	                && origin.getSchemeName().equalsIgnoreCase(target.getScheme())
 	                && origin.getHostName().equalsIgnoreCase(target.getHost())
@@ -292,6 +324,13 @@ public class DefaultHttpTransportProvider implements HttpTransportProvider {
 	        return "https".equalsIgnoreCase(host.getSchemeName()) ? 443 : 80;
 	    }
 
+	    @SuppressWarnings("unchecked")
+	    private void recordHop(HttpContext context, HttpResponse response, String from, URI target) {
+	        Object existing = context.getAttribute(Interceptor.REDIRECTS);
+	        List<RedirectHop> hops = existing instanceof List<?> ? (List<RedirectHop>) existing : new ArrayList<>();
+	        hops.add(new RedirectHop(response.getStatusLine().getStatusCode(), from, target.toString()));
+	        context.setAttribute(Interceptor.REDIRECTS, hops);
+	    }
 
 	    private static int port(URI uri) {
 	        if (uri.getPort() >= 0) {

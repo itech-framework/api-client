@@ -65,8 +65,12 @@ import io.github.itech_framework.api_client.transport.HttpTransportProvider;
 import io.github.itech_framework.api_client.transport.impl.DefaultHttpTransportProvider;
 import io.github.itech_framework.api_client.utils.JsonUtils;
 import io.github.itech_framework.api_client.utils.body.BodyEncoders;
+import io.github.itech_framework.api_client.utils.response.ApiExchange;
 import io.github.itech_framework.api_client.utils.response.ApiResponse;
+import io.github.itech_framework.api_client.utils.response.RedirectHop;
+import io.github.itech_framework.api_client.utils.response.SentRequest;
 import io.github.itech_framework.api_client.utils.response.StreamResponse;
+import io.github.itech_framework.api_client.utils.response.Timing;
 import io.github.itech_framework.core.exceptions.FrameworkException;
 
 public class DynamicApiClientInvocationHandler implements InvocationHandler {
@@ -381,10 +385,15 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 			CloseableHttpResponse response = null;
 			boolean keepOpen = false;
 			try {
+				long startNanos = System.nanoTime();
 				response = transportProvider.execute(prepared.request(), prepared.auth(), context);
+				long headersMillis = elapsedMillis(startNanos);
 				notifyResponse(response, context);
-				
+
 				Object result = processResponse(response);
+				if (result instanceof ApiResponse<?> api && metadata.getResultClass() == ApiExchange.class) {
+					result = exchangeOf(api, context, headersMillis, elapsedMillis(startNanos));
+				}
 				keepOpen = result instanceof StreamResponse;
 				return result;
 			} catch (Exception e) {
@@ -395,10 +404,29 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 					try {
 						response.close();
 					} catch (IOException ignored) {
-						// nothing useful to do
 					}
 				}
 			}
+		}
+		
+		@SuppressWarnings("unchecked")
+		private Object exchangeOf(ApiResponse<?> api, HttpContext context, long headersMillis, long totalMillis) {
+			SentRequest sent = (SentRequest) context.getAttribute(Interceptor.SENT_REQUEST);
+			int attempts = context.getAttribute(Interceptor.ATTEMPT) instanceof Integer count ? count : 1;
+			List<RedirectHop> redirects = new ArrayList<>();
+			if (context.getAttribute(Interceptor.REDIRECTS) instanceof List<?> hops) {
+				for (Object hop : hops) {
+					if (hop instanceof RedirectHop redirect) {
+						redirects.add(redirect);
+					}
+				}
+			}
+			return new ApiExchange<>((ApiResponse<Object>) api, sent, new Timing(headersMillis, totalMillis),
+					redirects, attempts);
+		}
+
+		private static long elapsedMillis(long startNanos) {
+			return (System.nanoTime() - startNanos) / 1_000_000;
 		}
 
 		private void applyDefaultHeaders(HttpRequest request) {
@@ -470,7 +498,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    if (resultClass == StreamResponse.class) {
 		        return new StreamResponse(response);
 		    }
-		    if (resultClass == ApiResponse.class) {
+		    if (resultClass == ApiResponse.class || resultClass == ApiExchange.class) {
 		        JavaType inner = metadata.getResultJavaType().containedTypeOrUnknown(0);
 		        Object body = readBody(response, entity, status, inner.getRawClass(), inner);
 		        return new ApiResponse<>(status, headersOf(response), body);
@@ -515,7 +543,7 @@ public class DynamicApiClientInvocationHandler implements InvocationHandler {
 		    if (resultClass == StreamResponse.class) {
 		        return true;
 		    }
-		    if (resultClass != ApiResponse.class) {
+		    if (resultClass != ApiResponse.class && resultClass != ApiExchange.class) {
 		        return false;
 		    }
 		    Class<?> inner = metadata.getResultJavaType().containedTypeOrUnknown(0).getRawClass();
